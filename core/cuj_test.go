@@ -856,6 +856,73 @@ func TestCUJ_G1_ResumeFailurePreservesConversationUntilExplicitNew(t *testing.T)
 	waitForReply("Answer from new-conversation")
 }
 
+type unconfirmedCloseReplySession struct {
+	*resumePolicyReplySession
+}
+
+func (s *unconfirmedCloseReplySession) Close() error {
+	_ = s.cujAgentSession.Close()
+	return errors.New("process termination unconfirmed")
+}
+
+func TestCUJ_G1_UnsafeConversationRemainsBlockedAfterNewAndSwitch(t *testing.T) {
+	var mu sync.Mutex
+	starts := 0
+	agent := &controllableAgent{startSessionFn: func(_ context.Context, id string) (AgentSession, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		starts++
+		if id == "" {
+			id = "replacement-conversation"
+			if starts == 1 {
+				id = "original-conversation"
+			}
+		}
+		s := &resumePolicyReplySession{cujAgentSession: newCUJAgentSession(), id: id}
+		s.reply = "Answer from " + id
+		if id == "original-conversation" {
+			return &unconfirmedCloseReplySession{s}, nil
+		}
+		return s, nil
+	}, listFn: func() ([]AgentSessionInfo, error) {
+		return []AgentSessionInfo{
+			{ID: "original-conversation", Summary: "original"},
+			{ID: "replacement-conversation", Summary: "replacement"},
+		}, nil
+	}}
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", agent, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	e.SetResumeFallbackToNew(false)
+	env := &cujEnv{t: t, engine: e, plat: p}
+	const user = "unsafe-resume-user"
+	const key = "test:" + user
+	sendAndWait := func(input, want string) {
+		t.Helper()
+		p.clearSent()
+		env.userSends(user, input)
+		env.waitFor(want, 3*time.Second, func() bool {
+			return strings.Contains(strings.Join(p.getSent(), "\n"), want) && !e.sessions.GetOrCreateActive(key).Busy()
+		})
+	}
+
+	sendAndWait("start original work", "Answer from original-conversation")
+	// /new itself encounters the teardown failure, before a blocked retry.
+	sendAndWait("/new replacement", "replacement")
+	if !env.sentContains("could not be confirmed killed") {
+		t.Fatalf("user did not see the original teardown failure: %q", p.getSent())
+	}
+	sendAndWait("start replacement work", "Answer from replacement-conversation")
+	sendAndWait("/switch original-conversation", "original")
+	sendAndWait("continue original work", "saved conversation was preserved")
+	if env.sentContains("Answer from original-conversation") {
+		t.Fatal("switching back resumed an unsafe conversation")
+	}
+	// Returning to the safe replacement must still resume normally.
+	sendAndWait("/switch replacement-conversation", "replacement")
+	sendAndWait("continue replacement work", "Answer from replacement-conversation")
+}
+
 // ===========================================================================
 // CUJ-E2 · A cron job created (programmatically by the agent or directly
 // via the store) shows up in /cron output for the same SessionKey.

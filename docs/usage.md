@@ -87,6 +87,9 @@ previous agent process could not be confirmed stopped. Resolve a temporary
 failure and resend your message to retry the same saved session; `/new` still
 starts a separate conversation explicitly. After an unconfirmed process stop,
 stop the old process before restarting cc-connect to retry the saved session.
+The unsafe native session remains blocked for the life of the running bridge,
+even if it is selected again with `/switch` after `/new`. Other sessions remain
+usable.
 Interactive failure notices do not include provider error details; check the logs
 to diagnose the cause.
 

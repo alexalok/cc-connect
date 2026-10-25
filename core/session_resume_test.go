@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -123,6 +124,101 @@ func TestResumeFallbackPolicy_UnsafeResumeRemainsBlockedAcrossRetries(t *testing
 	state = e.getOrCreateInteractiveStateWith(key, p, "ctx", fresh, e.sessions, nil, "")
 	if state.agentSession == nil || !reflect.DeepEqual(calls, []string{"", "fresh-id"}) {
 		t.Fatalf("new conversation inherited the old unsafe flag: calls=%q", calls)
+	}
+
+	// The native original remains selectable through /switch even when /new
+	// cleared its old cc-connect binding. Selecting it must not bypass safety.
+	e.cleanupInteractiveState(key)
+	previous := e.sessions.SwitchToAgentSession(key, "possibly-live-id", agent.Name(), "previous")
+	state = e.getOrCreateInteractiveStateWith(key, p, "ctx", previous, e.sessions, nil, "")
+	if state.agentSession != nil || state.startFailureMsg != MsgSessionResumeBlocked || len(calls) != 2 {
+		t.Fatalf("switching back bypassed unsafe native-ID guard: calls=%q", calls)
+	}
+
+	// A safe existing conversation is independent of the blocked ID.
+	e.cleanupInteractiveState(key)
+	safe := e.sessions.SwitchToAgentSession(key, "safe-id", agent.Name(), "safe")
+	state = e.getOrCreateInteractiveStateWith(key, p, "ctx", safe, e.sessions, nil, "")
+	if state.agentSession == nil || !reflect.DeepEqual(calls, []string{"", "fresh-id", "safe-id"}) {
+		t.Fatalf("safe existing conversation was blocked by another ID: calls=%q", calls)
+	}
+}
+
+type closeClearsNativeIDSession struct {
+	*controllableAgentSession
+}
+
+func (s *closeClearsNativeIDSession) Close() error {
+	err := s.controllableAgentSession.Close()
+	s.sessionID = ""
+	return err
+}
+
+func TestResumeFallbackPolicy_UnsafeTeardownCapturedBeforeDirectNew(t *testing.T) {
+	for _, fallback := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fallback=%v", fallback), func(t *testing.T) {
+			var calls []string
+			agent := &controllableAgent{startSessionFn: func(_ context.Context, id string) (AgentSession, error) {
+				calls = append(calls, id)
+				return newControllableSession("fresh-id"), nil
+			}}
+			p := &stubPlatformEngine{n: "test"}
+			e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+			t.Cleanup(e.cancel)
+			e.SetResumeFallbackToNew(fallback)
+			const key = "test:user"
+			old := &closeClearsNativeIDSession{newControllableSession("possibly-live-id")}
+			old.closeErr = errors.New("process termination unconfirmed")
+			e.sessions.GetOrCreateActive(key).SetAgentSessionID("possibly-live-id", agent.Name())
+			e.interactiveStates[key] = &interactiveState{agentSession: old, agent: agent, platform: p, replyCtx: "ctx"}
+
+			// /new itself fails to terminate the old process; no strict retry
+			// happened first to convert a channel marker into a native guard.
+			e.cmdNew(p, &Message{SessionKey: key, ReplyCtx: "ctx"}, []string{"replacement"})
+			fresh := e.sessions.GetOrCreateActive(key)
+			e.getOrCreateInteractiveStateWith(key, p, "ctx", fresh, e.sessions, nil, "")
+			e.cleanupInteractiveState(key)
+			previous := e.sessions.SwitchToAgentSession(key, "possibly-live-id", agent.Name(), "previous")
+			state := e.getOrCreateInteractiveStateWith(key, p, "ctx", previous, e.sessions, nil, "")
+			wantCalls := []string{""}
+			if fallback {
+				wantCalls = append(wantCalls, "")
+				if state.agentSession == nil {
+					t.Fatal("legacy mode should start a fresh session after unsafe resume")
+				}
+			} else if state.agentSession != nil || state.startFailureMsg != MsgSessionResumeBlocked {
+				t.Fatal("strict mode should block the old native conversation after /new")
+			}
+			if !reflect.DeepEqual(calls, wantCalls) {
+				t.Fatalf("unsafe native session was resumed: calls=%q, want %q", calls, wantCalls)
+			}
+		})
+	}
+}
+
+func TestHandleRelay_UnsafeNativeSessionRespectsResumePolicy(t *testing.T) {
+	for _, fallback := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fallback=%v", fallback), func(t *testing.T) {
+			var calls []string
+			agent := &controllableAgent{startSessionFn: func(_ context.Context, id string) (AgentSession, error) {
+				calls = append(calls, id)
+				return &resumePolicyReplySession{cujAgentSession: newCUJAgentSession(), id: "fresh-id"}, nil
+			}}
+			e := NewEngine("test", agent, nil, "", LangEnglish)
+			t.Cleanup(e.cancel)
+			e.SetResumeFallbackToNew(fallback)
+			e.markUnsafeAgentSession(agent, "possibly-live-id")
+			session := e.sessions.GetOrCreateActive("relay:source:test:chat")
+			session.SetAgentSessionID("possibly-live-id", agent.Name())
+			_, err := e.HandleRelay(context.Background(), "source", "test:chat:user", "hello")
+			if fallback {
+				if err != nil || !reflect.DeepEqual(calls, []string{""}) {
+					t.Fatalf("legacy relay did not start fresh: calls=%q, error=%v", calls, err)
+				}
+			} else if err == nil || len(calls) != 0 || session.GetAgentSessionID() != "possibly-live-id" {
+				t.Fatalf("strict relay did not preserve unsafe binding: calls=%q, error=%v", calls, err)
+			}
+		})
 	}
 }
 
