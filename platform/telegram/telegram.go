@@ -112,6 +112,7 @@ type Platform struct {
 	enableReactions       bool
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
+	topicRouting          privateTopicRouting
 
 	mu                  sync.RWMutex
 	bot                 telegramBot
@@ -400,6 +401,10 @@ func (p *Platform) processUpdate(ctx context.Context, update *models.Update) {
 }
 
 func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
+	service, ambiguousTopic := p.routeTopicMessage(msg)
+	if service {
+		return
+	}
 	msgTime := time.Unix(int64(msg.Date), 0)
 	if core.IsOldMessage(msgTime) {
 		slog.Debug("telegram: ignoring old message after restart", "date", msgTime)
@@ -432,6 +437,14 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 	userID := strconv.FormatInt(msg.From.ID, 10)
 	if !core.AllowList(p.allowFrom, userID) {
 		slog.Debug("telegram: message from unauthorized user", "user", userID)
+		return
+	}
+	if ambiguousTopic {
+		lang := core.NormalizeLanguageString(msg.From.LanguageCode)
+		text := core.NewI18n(lang).T(core.MsgTopicOpenerAmbiguous)
+		if err := p.Reply(ctx, replyContext{chatID: msg.Chat.ID, messageID: msg.ID}, text); err != nil {
+			slog.Warn("telegram: send ambiguous topic notice failed", "error", core.RedactToken(err.Error(), p.token))
+		}
 		return
 	}
 
