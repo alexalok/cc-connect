@@ -798,6 +798,64 @@ func TestCUJ_G1_LLMFailureSurfacesErrorToUser(t *testing.T) {
 	}
 }
 
+// A temporary resume failure must leave the conversation available for retry;
+// the user explicitly chooses when to replace it with /new.
+func TestCUJ_G1_ResumeFailurePreservesConversationUntilExplicitNew(t *testing.T) {
+	var mu sync.Mutex
+	attempts := 0
+	agent := &controllableAgent{startSessionFn: func(_ context.Context, id string) (AgentSession, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts++
+		if attempts == 1 {
+			return nil, errors.New("temporary provider failure with private details")
+		}
+		if id == "" {
+			id = "new-conversation"
+		}
+		s := &resumePolicyReplySession{cujAgentSession: newCUJAgentSession(), id: id}
+		s.reply = "Answer from " + id
+		return s, nil
+	}}
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", agent, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	e.SetResumeFallbackToNew(false)
+	env := &cujEnv{t: t, engine: e, plat: p}
+	const user = "resume-user"
+	const key = "test:" + user
+	e.sessions.GetOrCreateActive(key).SetAgentSessionID("original-conversation", agent.Name())
+	e.sessions.Save()
+	waitForReply := func(want string) {
+		t.Helper()
+		env.waitFor(want, 3*time.Second, func() bool {
+			return strings.Contains(strings.Join(p.getSent(), "\n"), want) && !e.sessions.GetOrCreateActive(key).Busy()
+		})
+	}
+
+	// Action 1: the failed resume produces an actionable error, not a fresh answer.
+	env.userSends(user, "continue our conversation")
+	waitForReply("saved session was preserved")
+	if strings.Contains(strings.Join(p.getSent(), "\n"), "private details") {
+		t.Fatal("provider error details leaked into chat")
+	}
+
+	// Action 2: resending after recovery continues the original conversation.
+	p.clearSent()
+	env.userSends(user, "retry our conversation")
+	waitForReply("Answer from original-conversation")
+
+	// Actions 3–4: /new still permits an intentional replacement.
+	p.clearSent()
+	env.userSends(user, "/new replacement")
+	env.waitFor("new conversation acknowledgement", 3*time.Second, func() bool {
+		return strings.Contains(strings.Join(p.getSent(), "\n"), "replacement")
+	})
+	p.clearSent()
+	env.userSends(user, "start the replacement conversation")
+	waitForReply("Answer from new-conversation")
+}
+
 // ===========================================================================
 // CUJ-E2 · A cron job created (programmatically by the agent or directly
 // via the store) shows up in /cron output for the same SessionKey.

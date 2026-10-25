@@ -69,6 +69,30 @@ The next normal message after a long idle period starts in a fresh session autom
 
 To restore the previous behavior of always continuing, set `reset_on_idle_mins = 0`.
 
+### Resume failure policy
+
+By default, if a saved agent session cannot be resumed, cc-connect starts a
+fresh session. Set the project option below to preserve the saved session
+binding and report an error instead:
+
+```toml
+[[projects]]
+name = "demo"
+resume_fallback_to_new = false # default: true
+```
+
+This applies to interactive and relay resume errors. It also prevents an
+interactive session from being replaced after a validation failure or when the
+previous agent process could not be confirmed stopped. Resolve a temporary
+failure and resend your message to retry the same saved session; `/new` still
+starts a separate conversation explicitly. After an unconfirmed process stop,
+stop the old process before restarting cc-connect to retry the saved session.
+Interactive failure notices do not include provider error details; check the logs
+to diagnose the cause.
+
+The option supports configuration reloads. It is independent of idle rotation:
+use `reset_on_idle_mins = 0` as well to disable automatic rotation after inactivity.
+
 ### Model switch preserves history
 
 `/model` preserves the current session — the agent resumes the conversation with the new model (no extra token cost). Model switching affects the shared agent instance — if multiple platforms use the same project, the model change applies to all of them.
