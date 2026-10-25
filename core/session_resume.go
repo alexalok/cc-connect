@@ -1,5 +1,44 @@
 package core
 
+type unsafeAgentSessionKey struct {
+	agentName string
+	sessionID string
+}
+
+func (e *Engine) unsafeAgentSessionKey(agent Agent, sessionID string) unsafeAgentSessionKey {
+	if agent == nil {
+		agent = e.agent
+	}
+	key := unsafeAgentSessionKey{sessionID: sessionID}
+	if agent != nil {
+		key.agentName = agent.Name()
+	}
+	return key
+}
+
+// Keep guards for the life of the engine: switching chats or choosing /new
+// cannot prove that the old native process stopped. A different native ID (or
+// agent type) is independent and remains usable.
+func (e *Engine) markUnsafeAgentSession(agent Agent, sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	key := e.unsafeAgentSessionKey(agent, sessionID)
+	e.closingMu.Lock()
+	defer e.closingMu.Unlock()
+	if e.unsafeAgentSessions == nil {
+		e.unsafeAgentSessions = make(map[unsafeAgentSessionKey]bool)
+	}
+	e.unsafeAgentSessions[key] = true
+}
+
+func (e *Engine) isUnsafeAgentSession(agent Agent, sessionID string) bool {
+	key := e.unsafeAgentSessionKey(agent, sessionID)
+	e.closingMu.Lock()
+	defer e.closingMu.Unlock()
+	return e.unsafeAgentSessions[key]
+}
+
 // SetResumeFallbackToNew controls whether a failed or unsafe resume may replace
 // the saved agent session. The default is true. Setting false leaves the binding
 // intact for retry or an explicit /new, without starting a replacement session.
