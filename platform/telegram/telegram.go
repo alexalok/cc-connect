@@ -423,8 +423,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 		return
 	}
 	if ambiguousTopic {
-		lang := core.NormalizeLanguageString(msg.From.LanguageCode)
-		text := core.NewI18n(lang).T(core.MsgTopicOpenerAmbiguous)
+		text := p.noticeI18n().T(core.MsgTopicOpenerAmbiguous)
 		if err := p.Reply(ctx, replyContext{chatID: msg.Chat.ID, messageID: msg.ID}, text); err != nil {
 			slog.Warn("telegram: send ambiguous topic notice failed", "error", core.RedactToken(err.Error(), p.token))
 		}
