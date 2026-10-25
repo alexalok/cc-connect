@@ -197,6 +197,12 @@ level=INFO msg="platform started" project=my-project platform=telegram
 level=INFO msg="cc-connect is running" projects=1
 ```
 
+### 5.3 Messages Sent During Downtime
+
+On startup or reconnect, cc-connect skips pending messages sent before the connection's recovery cutoff. It does not run the agent on that backlog. Each affected chat or topic receives one summary containing the number of skipped messages, the earliest skipped timestamp (UTC), and a request to resend anything still relevant. Counts include authorized messages the bot would normally accept, including supported attachments; service events, button callbacks, and messages from unauthorized senders are excluded.
+
+Messages arriving during recovery remain available for normal processing. If Telegram delivers an older message after the first live message, cc-connect skips it and updates the existing summary instead of sending another notice. Counts cover only updates Telegram still retains. Notices use the configured cc-connect language; delivery failures are logged without blocking the connection or repeatedly posting copies.
+
 ---
 
 ## Step 6: Start Chatting

@@ -112,6 +112,8 @@ type Platform struct {
 	enableReactions       bool
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
+	i18n                  *core.I18n
+	downtime              *downtimeDrain
 
 	mu                  sync.RWMutex
 	bot                 telegramBot
@@ -271,42 +273,10 @@ func defaultNewBot(token string, onUpdate func(context.Context, *models.Update),
 		return nil, nil, nil, fmt.Errorf("getMe: %w", err)
 	}
 
-	// Drain pending updates before starting polling to avoid 409 Conflict.
-	// This clears any outstanding long-poll request from a previous instance.
-	drainPendingUpdates(token, httpClient)
-
-	return newRateLimitRetryBot(b), me, b.Start, nil
-}
-
-// drainPendingUpdates clears any pending updates on Telegram's side by calling
-// getUpdates with offset=-1. This terminates any outstanding long-poll request
-// from a previous bot instance, preventing 409 Conflict errors on restart.
-func drainPendingUpdates(token string, httpClient *http.Client) {
-	apiURL := "https://api.telegram.org/bot" + token + "/getUpdates?offset=-1&timeout=0"
-	client := httpClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
-	if err != nil {
-		slog.Debug("telegram: drain updates request creation failed", "error", err)
-		return
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		slog.Debug("telegram: drain updates request failed", "error", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	// Read and discard response body to ensure connection is properly closed
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	slog.Debug("telegram: drained pending updates", "status", resp.StatusCode)
+	return &startupBot{
+		telegramBot: newRateLimitRetryBot(b), token: token, client: httpClient,
+		setOffset: func(lastID int64) { tgbot.WithInitialOffset(lastID)(b) },
+	}, me, b.Start, nil
 }
 
 func (p *Platform) connectLoop(ctx context.Context) {
@@ -376,6 +346,16 @@ func (p *Platform) runConnection(ctx context.Context) error {
 	if !ok {
 		return nil
 	}
+	if source, ok := b.(pendingUpdateSource); ok {
+		if err := p.drainDowntime(ctx, source, b); err != nil {
+			p.clearBot(gen, b)
+			cause := retryCauseInitialConnectFailure
+			if p.hasEverConnected() {
+				cause = retryCauseReconnectFailure
+			}
+			return &retryLoopError{cause: cause, err: err}
+		}
+	}
 
 	slog.Info("telegram: connected", "bot", me.Username)
 	p.emitReady(gen)
@@ -388,6 +368,9 @@ func (p *Platform) runConnection(ctx context.Context) error {
 }
 
 func (p *Platform) processUpdate(ctx context.Context, update *models.Update) {
+	if update == nil || p.discardLateDowntimeUpdate(ctx, update) {
+		return
+	}
 	if update.CallbackQuery != nil {
 		p.handleCallbackQuery(ctx, update.CallbackQuery)
 		return

@@ -688,6 +688,9 @@ const (
 	MsgWsInitLocalPathsDisabled MsgKey = "ws_init_local_paths_disabled"
 	MsgBackgroundAutoDenied     MsgKey = "background_auto_denied"
 
+	MsgDowntimeMessagesSkippedChat  MsgKey = "downtime_messages_skipped_chat"
+	MsgDowntimeMessagesSkippedTopic MsgKey = "downtime_messages_skipped_topic"
+
 	// Agent system-prompt tool sections (Issue #1655). These are appended
 	// to the agent's own system prompt by core/interfaces.go AgentSystemPromptForLang
 	// so that operators running cc-connect with language="zh" see the
@@ -701,6 +704,20 @@ const (
 )
 
 var messages = map[MsgKey]map[Language]string{
+	MsgDowntimeMessagesSkippedChat: {
+		LangEnglish:            "Sorry, I was offline. I skipped %d messages in this chat, starting %s. Please resend anything still relevant.",
+		LangChinese:            "抱歉，我刚才离线了。此聊天中有 %d 条消息已跳过，最早发送于 %s。仍需处理的内容请重新发送。",
+		LangTraditionalChinese: "抱歉，我剛才離線了。此聊天中有 %d 則訊息已略過，最早傳送於 %s。仍需處理的內容請重新傳送。",
+		LangJapanese:           "オフラインになっており、申し訳ありません。このチャットで %d 件のメッセージをスキップしました（最初の送信日時: %s）。まだ必要な内容は再送してください。",
+		LangSpanish:            "Lo siento, estaba desconectado. Omití %d mensajes en este chat, a partir de %s. Vuelve a enviar lo que siga siendo relevante.",
+	},
+	MsgDowntimeMessagesSkippedTopic: {
+		LangEnglish:            "Sorry, I was offline. I skipped %d messages in this topic, starting %s. Please resend anything still relevant.",
+		LangChinese:            "抱歉，我刚才离线了。此话题中有 %d 条消息已跳过，最早发送于 %s。仍需处理的内容请重新发送。",
+		LangTraditionalChinese: "抱歉，我剛才離線了。此話題中有 %d 則訊息已略過，最早傳送於 %s。仍需處理的內容請重新傳送。",
+		LangJapanese:           "オフラインになっており、申し訳ありません。このトピックで %d 件のメッセージをスキップしました（最初の送信日時: %s）。まだ必要な内容は再送してください。",
+		LangSpanish:            "Lo siento, estaba desconectado. Omití %d mensajes en este tema, a partir de %s. Vuelve a enviar lo que siga siendo relevante.",
+	},
 	MsgStarting: {
 		LangEnglish:            "⏳ Processing...",
 		LangChinese:            "⏳ 处理中...",
