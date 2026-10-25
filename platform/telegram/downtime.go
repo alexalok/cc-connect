@@ -262,11 +262,14 @@ func (p *Platform) discardLateDowntimeUpdate(ctx context.Context, update *models
 	if !drain.complete.Load() {
 		return false
 	}
-	if update.ID <= drain.lastUpdateID {
-		return true
-	}
-	drain.lastUpdateID = update.ID
 	if msg := update.Message; msg != nil && int64(msg.Date) < drain.cutoff.Unix() {
+		// Deduplicate only the old backlog. Telegram may choose a lower random
+		// update ID after a week without updates, so a lifetime high-water mark
+		// must not reject live messages or callbacks.
+		if update.ID <= drain.lastUpdateID {
+			return true
+		}
+		drain.lastUpdateID = update.ID
 		if dest, summary := p.countDowntimeMessage(drain, msg); summary != nil {
 			p.sendDowntimeNotice(ctx, bot, dest, summary)
 		}
