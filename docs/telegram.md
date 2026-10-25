@@ -219,7 +219,23 @@ level=INFO msg="cc-connect is running" projects=1
 Telegram topics include a `message_thread_id`. cc-connect uses that thread ID
 as part of the Telegram session key, so each topic has its own independent
 conversation context. This applies to forum topics in groups and private chat
-topics when Telegram includes `message_thread_id`.
+topics.
+
+For private topics, enable Threaded mode and allow users to create topics in
+BotFather. Sending an ordinary message from **All Messages** then creates a
+topic in Telegram. cc-connect adopts that topic and uses the opening message
+as its first input; no group, `/new` command, or second topic is needed. Images,
+documents, voice notes, and audio can also be the opening input.
+
+Some Telegram clients omit the thread ID on that opening message. cc-connect
+uses the preceding topic-creation event from the same authorized human and
+private chat to route messages sent within five seconds of that event or the
+previous opener chunk. Explicit thread IDs always take precedence, and media
+album parts retain their topic. This inference never applies to groups.
+
+If multiple topics are created before their opening messages arrive, the
+missing IDs can be ambiguous. Those messages are not sent to an agent;
+cc-connect asks the sender to resend them inside the intended topic.
 
 ---
 

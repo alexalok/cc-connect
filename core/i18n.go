@@ -218,6 +218,7 @@ const (
 	MsgError                     MsgKey = "error"
 	MsgSessionNotFound           MsgKey = "session_not_found"
 	MsgFailedToStartAgentSession MsgKey = "failed_to_start_agent_session"
+	MsgTopicOpenerAmbiguous      MsgKey = "topic_opener_ambiguous"
 	MsgFailedToDeleteSession     MsgKey = "failed_to_delete_session"
 	MsgEmptyResponse             MsgKey = "empty_response"
 	MsgPermissionPrompt          MsgKey = "permission_prompt"
@@ -701,6 +702,13 @@ const (
 )
 
 var messages = map[MsgKey]map[Language]string{
+	MsgTopicOpenerAmbiguous: {
+		LangEnglish:            "I couldn't determine which topic this message belongs to, so I haven't processed it. Please resend it inside the intended topic.",
+		LangChinese:            "无法确定这条消息属于哪个话题，因此尚未处理。请在目标话题内重新发送。",
+		LangTraditionalChinese: "無法確定這則訊息屬於哪個話題，因此尚未處理。請在目標話題內重新傳送。",
+		LangJapanese:           "このメッセージがどのトピックに属するか判断できなかったため、処理していません。送信先のトピック内で再送してください。",
+		LangSpanish:            "No pude determinar a qué tema pertenece este mensaje, así que no lo he procesado. Vuelve a enviarlo dentro del tema correspondiente.",
+	},
 	MsgStarting: {
 		LangEnglish:            "⏳ Processing...",
 		LangChinese:            "⏳ 处理中...",
