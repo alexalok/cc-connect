@@ -201,6 +201,40 @@ func TestDrainDowntime_RetryRetainsAcknowledgedCountsAndCutoff(t *testing.T) {
 	}
 }
 
+func TestDiscardLateDowntimeUpdate_PreservesLiveTrafficAfterUpdateIDReset(t *testing.T) {
+	cutoff := time.Now().UTC().Truncate(time.Second)
+	drain := &downtimeDrain{cutoff: cutoff, lastUpdateID: 1000, groups: make(map[downtimeDestination]*downtimeSummary)}
+	drain.complete.Store(true)
+	sender := newDowntimeNoticeBot()
+	var received int
+	p := &Platform{bot: sender, downtime: drain, handler: func(core.Platform, *core.Message) { received++ }}
+	// Telegram randomizes the next update ID after a week without updates;
+	// a fresh message can therefore have a lower ID than the drained backlog.
+	p.processUpdate(context.Background(), downtimeMessage(10, int(cutoff.Unix()), 10, 0))
+	if received != 1 {
+		t.Fatal("fresh message after update ID reset was discarded")
+	}
+	callback := &models.Update{ID: 11, CallbackQuery: &models.CallbackQuery{ID: "new-click"}}
+	if p.discardLateDowntimeUpdate(context.Background(), callback) {
+		t.Fatal("fresh callback after update ID reset was discarded")
+	}
+	// Live traffic must not move the backlog high-water mark in either
+	// direction; only old messages participate in backlog deduplication.
+	p.processUpdate(context.Background(), downtimeMessage(2000, int(cutoff.Unix()), 10, 0))
+	if drain.lastUpdateID != 1000 {
+		t.Fatalf("live traffic changed backlog high-water mark to %d", drain.lastUpdateID)
+	}
+	old := downtimeMessage(1001, int(cutoff.Unix())-20, 10, 0)
+	p.processUpdate(context.Background(), old)
+	p.processUpdate(context.Background(), old)
+	if received != 2 || len(sender.sends) != 1 || len(sender.edits) != 0 {
+		t.Fatalf("received=%d notices=%d edits=%d; expected only live inputs and one old-message notice", received, len(sender.sends), len(sender.edits))
+	}
+	if !strings.Contains(sender.sends[0].Text, "skipped 1 messages") || drain.lastUpdateID != 1001 {
+		t.Fatalf("old-message count or dedup state is wrong: notice=%q high-water=%d", sender.sends[0].Text, drain.lastUpdateID)
+	}
+}
+
 func TestDrainDowntime_NoticesOnlyEligibleGroupMessages(t *testing.T) {
 	date := int(time.Now().Add(-time.Hour).Unix())
 	mentioned := downtimeMessage(1, date, -10, 90)
