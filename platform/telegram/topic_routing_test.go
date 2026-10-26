@@ -299,6 +299,41 @@ func TestProcessUpdate_PrivateTopicAmbiguousOpenersAreNotDispatched(t *testing.T
 	}
 }
 
+func TestProcessUpdate_PrivateTopicAmbiguityExpiresAtSendTimeWindow(t *testing.T) {
+	var handled []*core.Message
+	bot := newStubTelegramBot()
+	p := &Platform{bot: bot,
+		handler: func(_ core.Platform, msg *core.Message) { handled = append(handled, msg) },
+	}
+	date := int(time.Now().Unix())
+	for _, msg := range []*models.Message{
+		topicCreated(10, date, 55), topicCreated(11, date+1, 66),
+		topicMessage(12, date+2, 0), topicMessage(13, date+6, 0),
+	} {
+		p.processUpdate(context.Background(), &models.Update{Message: msg})
+	}
+	if len(handled) != 0 || bot.SendMessageCallCount() != 2 {
+		t.Fatal("openers within the ambiguity window must request an explicit topic")
+	}
+	// Rejected prompts must not extend the window beyond the last creation.
+	// These arrive immediately after the rejected prompts, so wall-clock expiry
+	// cannot clear the ambiguity on their behalf.
+	for i, sentAt := range []int{date + 7, date + 8, date + 60} {
+		p.processUpdate(context.Background(), &models.Update{Message: topicMessage(14+i, sentAt, 0)})
+		if len(handled) != i+1 || handled[i].SessionKey != "telegram:100:7" {
+			t.Fatalf("unrelated later message %d did not reach the general-chat session", i)
+		}
+	}
+	if bot.SendMessageCallCount() != 2 {
+		t.Fatal("expired ambiguity kept sending resend notices")
+	}
+	p.processUpdate(context.Background(), &models.Update{Message: topicCreated(17, date+61, 77)})
+	p.processUpdate(context.Background(), &models.Update{Message: topicMessage(18, date+62, 0)})
+	if len(handled) != 4 || handled[3].SessionKey != "telegram:100:77:7" {
+		t.Fatal("expired ambiguity prevented adopting a later topic")
+	}
+}
+
 func TestPrivateTopicRouting_StateIsBoundedAndExpires(t *testing.T) {
 	var routing privateTopicRouting
 	now := time.Now()
