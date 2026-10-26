@@ -504,11 +504,14 @@ cc-connect update --pre     # Include pre-releases
 
 ```
 /new [name]       Start a new session
+/archive          Archive the current agent session and remove its topic
 /list             List all sessions
 /switch <id>      Switch session
 /current          Show current session
 /dir [path|reset] Show, switch, or reset work directory
 ```
+
+`/archive` uses the agent's native archive (currently supported by Codex), preserving its conversation history. In Telegram topics, it then deletes the topic and all of its messages. The bot needs the **Delete messages** administrator permission in forum supergroups. In chats without a deletable topic, only the session is archived. If archiving fails, the topic is kept; if topic deletion fails, fix the bot's permissions and retry `/archive`.
 
 Project configs rotate to a fresh session automatically after long inactivity. This prevents "context drift" where stale chat history (failed commands, debugging noise) is repeatedly re-ingested via `--continue` and starts to dominate the model's attention. The previous session is preserved and remains accessible via `/list` and `/switch`.
 
