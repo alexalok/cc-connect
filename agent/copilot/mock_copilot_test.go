@@ -20,8 +20,31 @@ func TestMain(m *testing.M) {
 	case "delete_session":
 		runMockCopilot(handleDeleteSession)
 		os.Exit(0)
+	case "resume_failure":
+		runMockCopilot(handleResumeFailure)
+		os.Exit(0)
 	default:
 		os.Exit(m.Run())
+	}
+}
+
+func handleResumeFailure(method string, id json.RawMessage, _ json.RawMessage, w *lspWriter) {
+	log, err := os.OpenFile(os.Getenv("CC_MOCK_COPILOT_REQUEST_LOG"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		writeError(w, id, -1, err.Error())
+		return
+	}
+	_, _ = fmt.Fprintln(log, method)
+	_ = log.Close()
+	switch method {
+	case "ping":
+		writeResponse(w, id, map[string]any{"pong": true})
+	case "session.resume":
+		writeError(w, id, -32602, "saved session unavailable")
+	case "session.create":
+		writeResponse(w, id, map[string]any{"sessionId": "fresh-session"})
+	default:
+		writeError(w, id, -32601, "unknown method: "+method)
 	}
 }
 

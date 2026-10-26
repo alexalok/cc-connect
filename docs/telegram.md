@@ -201,6 +201,8 @@ level=INFO msg="cc-connect is running" projects=1
 
 On startup or reconnect, cc-connect skips pending messages sent before the connection's recovery cutoff. It does not run the agent on that backlog. Each affected chat or topic receives one summary containing the number of skipped messages, the earliest skipped timestamp (UTC), and a request to resend anything still relevant. Counts include authorized messages the bot would normally accept, including supported attachments; service events, button callbacks, and messages from unauthorized senders are excluded.
 
+A failed polling request returns to the connection retry loop, so this recovery also runs after network outages while cc-connect stays running. Live updates fetched before the failure finish processing before reconnection; errors sending replies do not restart polling.
+
 Messages arriving during recovery remain available for normal processing. If Telegram delivers an older message after the first live message, cc-connect skips it and updates the existing summary instead of sending another notice. Counts cover only updates Telegram still retains. Notices use the configured cc-connect language; delivery failures are logged without blocking the connection or repeatedly posting copies.
 
 ---

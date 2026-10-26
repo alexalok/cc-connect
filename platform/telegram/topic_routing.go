@@ -112,7 +112,9 @@ func (r *privateTopicRouting) route(msg *models.Message, now time.Time) bool {
 		return false
 	}
 	if msg.MessageThreadID == 0 {
-		if previous.ambiguous {
+		if previous.ambiguous && msg.Date-previous.sentAt <= privateTopicFollowSeconds {
+			// Rejections do not extend the creation's correlation window.
+			// Outside it, remember next below to clear expired ambiguity.
 			previous.messageID, previous.seenAt = msg.ID, now
 			r.remember(key, previous)
 			return true
