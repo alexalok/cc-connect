@@ -60,8 +60,6 @@ directory, including staging incoming attachments there. Other topics and new
 sessions keep their own working directories; no `/dir` change is needed.
 Project commands such as `/dir`, `/shell`, and `/diff` continue to use the
 project's default directory, rather than the selected Codex session's directory.
-A missing saved directory reports a resume error. Set `resume_fallback_to_new = false`
-at the project level to keep that binding for a later retry instead of starting fresh.
 Archived sessions and helper subagents remain excluded, and `filter_external_sessions`
 and multi-workspace ownership filters still apply. This does not mirror activity
 from an independently running Codex client into the chat.
