@@ -130,6 +130,7 @@ type topicMessagePlatform struct {
 	attempts     int
 	failAt       int
 	destinations []string
+	afterSend    func()
 }
 
 func (p *topicMessagePlatform) Send(ctx context.Context, reply any, text string) error {
@@ -138,7 +139,77 @@ func (p *topicMessagePlatform) Send(ctx context.Context, reply any, text string)
 		return errors.New("temporary delivery failure")
 	}
 	p.destinations = append(p.destinations, reply.(string))
-	return p.stubPlatformEngine.Send(ctx, reply, text)
+	err := p.stubPlatformEngine.Send(ctx, reply, text)
+	if err == nil && p.afterSend != nil {
+		p.afterSend()
+	}
+	return err
+}
+
+func TestSessionTopicSync_ExistingFeedContinuesAfterDiscoveryOrCreationFailure(t *testing.T) {
+	for _, failure := range []string{"discovery", "creation"} {
+		t.Run(failure, func(t *testing.T) {
+			a := &topicMessageAgent{topicDiscoveryAgent: topicDiscoveryAgent{infos: []AgentSessionInfo{{ID: "existing"}}}}
+			p := &topicMessagePlatform{topicSyncPlatform: topicSyncPlatform{target: "owner"}}
+			_, w := newTopicSyncTest(t, a, p, filepath.Join(t.TempDir(), "sessions.json"))
+			if err := w.poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			p.clearSent()
+			unavailable := errors.New("temporarily unavailable")
+			if failure == "discovery" {
+				a.err = unavailable
+			} else {
+				a.infos = append(a.infos, AgentSessionInfo{ID: "new"})
+				p.err = unavailable
+			}
+			for _, id := range []string{"first", "second"} {
+				a.messages = append(a.messages, SessionMessage{ID: id, Role: "assistant", Content: "Update " + id})
+				if err := w.poll(context.Background()); !errors.Is(err, unavailable) {
+					t.Fatalf("missing failure from poll: %v", err)
+				}
+			}
+			got := p.getSent()
+			if len(got) != 2 || !strings.Contains(got[0], "Update first") || !strings.Contains(got[1], "Update second") {
+				t.Fatalf("unrelated failure froze or replayed the existing feed: %v", got)
+			}
+			for _, key := range p.destinations {
+				if key != p.keys[0] {
+					t.Fatalf("existing message sent to wrong topic: %s", key)
+				}
+			}
+		})
+	}
+}
+
+func TestSessionTopicSync_PersistenceFailureStopsFurtherDelivery(t *testing.T) {
+	for _, failure := range []string{"creation", "delivery"} {
+		t.Run(failure, func(t *testing.T) {
+			a := &topicMessageAgent{topicDiscoveryAgent: topicDiscoveryAgent{infos: []AgentSessionInfo{{ID: "first"}, {ID: "second"}}}}
+			p := &topicMessagePlatform{topicSyncPlatform: topicSyncPlatform{target: "owner"}}
+			_, w := newTopicSyncTest(t, a, p, filepath.Join(t.TempDir(), "sessions.json"))
+			if err := w.poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			a.messages = []SessionMessage{{ID: "new-message", Role: "assistant", Content: "Pending update"}}
+			unwritable := t.TempDir()
+			breakJournal := func() { w.path = unwritable }
+			wantDelivered := 1
+			if failure == "creation" {
+				a.infos = append(a.infos, AgentSessionInfo{ID: "third"})
+				p.afterCreate = breakJournal
+				wantDelivered = 0
+			} else {
+				p.afterSend = breakJournal
+			}
+			if err := w.poll(context.Background()); err == nil {
+				t.Fatal("journal failure was ignored")
+			}
+			if len(p.destinations) != wantDelivered {
+				t.Fatalf("delivered %d messages after journal failure, want %d", len(p.destinations), wantDelivered)
+			}
+		})
+	}
 }
 
 func TestSessionTopicSync_MirrorsMessagesIntoPreviouslyEmptyTopic(t *testing.T) {

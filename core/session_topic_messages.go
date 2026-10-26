@@ -33,6 +33,9 @@ func (w *sessionTopicSync) mirrorMessages(ctx context.Context) error {
 		}
 		if err := w.mirrorTopicMessages(ctx, id, &remaining); err != nil {
 			failures = append(failures, fmt.Errorf("session topic sync: mirror %s: %w", id, err))
+			if errors.Is(err, errSessionTopicSyncPersistence) {
+				return errors.Join(failures...)
+			}
 		}
 	}
 	return errors.Join(failures...)

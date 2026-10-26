@@ -28,11 +28,12 @@ func (a *topicDiscoveryAgent) DiscoverSessions(ctx context.Context, _ time.Time)
 
 type topicSyncPlatform struct {
 	stubPlatformEngine
-	target  string
-	err     error
-	keys    []string
-	created chan string
-	release <-chan struct{}
+	target      string
+	err         error
+	keys        []string
+	created     chan string
+	release     <-chan struct{}
+	afterCreate func()
 }
 
 func (p *topicSyncPlatform) SessionTopicSyncConfig() (string, time.Duration) {
@@ -51,6 +52,9 @@ func (p *topicSyncPlatform) CreateSessionTopic(_ context.Context, title string) 
 	if p.created != nil {
 		p.created <- key
 		<-p.release
+	}
+	if p.afterCreate != nil {
+		p.afterCreate()
 	}
 	return key, nil
 }

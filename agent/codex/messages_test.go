@@ -163,6 +163,35 @@ func TestReadSessionMessages_DualWrittenAttachmentsMirrorOnce(t *testing.T) {
 	}
 }
 
+func TestReadSessionMessages_LegacyOnlyImagePromptsRemainVisible(t *testing.T) {
+	home := t.TempDir()
+	writeVisibleMessages(t, home, "chat", "chat", visibleTurnEvent("t1", "composer"),
+		`{"type":"event_msg","payload":{"type":"user_message","message":"Inspect these","images":["opaque-image"],"local_images":["/not-opened/image.png"]}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"","images":["opaque-image"]}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"","local_images":["/not-opened/image.png"]}}`,
+		`{"type":"event_msg","payload":{"type":"user_message","message":"Text only","images":null,"local_images":[]}}`,
+	)
+	a := &Agent{codexHome: home}
+	messages, err := a.ReadSessionMessages(context.Background(), "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("legacy prompts returned %d messages, want 4", len(messages))
+	}
+	for i, want := range []int{2, 1, 1, 0} {
+		if messages[i].Role != "user" || messages[i].Attachments != want {
+			t.Errorf("legacy prompt %d = %+v, want %d attachments", i, messages[i], want)
+		}
+	}
+	if messages[0].Content != "Inspect these" || messages[3].Content != "Text only" {
+		t.Fatal("legacy text was lost")
+	}
+	if messages[1].ID == messages[2].ID {
+		t.Fatal("distinct image-only prompts were collapsed")
+	}
+}
+
 func TestReadSessionMessages_RejectsCorruptCompletedRecordAndWrongIdentity(t *testing.T) {
 	home := t.TempDir()
 	writeVisibleMessages(t, home, "chat-wrong", "different-chat", visibleMessageEvent("UserMessage", "t", "", "", "Wrong chat"))

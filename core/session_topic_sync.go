@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"sync"
 	"time"
 )
+
+var errSessionTopicSyncPersistence = errors.New("session topic sync: save state")
 
 type sessionTopicSyncState struct {
 	Since  time.Time         `json:"since"`
@@ -119,10 +122,10 @@ func (w *sessionTopicSync) load() error {
 func (w *sessionTopicSync) save() error {
 	data, err := json.Marshal(w.state)
 	if err != nil {
-		return fmt.Errorf("session topic sync: encode state: %w", err)
+		return fmt.Errorf("%w: encode: %w", errSessionTopicSyncPersistence, err)
 	}
 	if err := AtomicWriteFile(w.path, data, 0o600); err != nil {
-		return fmt.Errorf("session topic sync: save state: %w", err)
+		return fmt.Errorf("%w: %w", errSessionTopicSyncPersistence, err)
 	}
 	return nil
 }
@@ -152,12 +155,14 @@ func (w *sessionTopicSync) poll(ctx context.Context) error {
 		return err
 	}
 	sessions, err := w.source.DiscoverSessions(ctx, w.state.Since)
+	var failures []error
 	if err != nil {
-		return fmt.Errorf("session topic sync: discover: %w", err)
+		failures = append(failures, fmt.Errorf("session topic sync: discover: %w", err))
+		sessions = nil
 	}
 	for _, info := range sessions {
 		if err := ctx.Err(); err != nil {
-			return err
+			return errors.Join(append(failures, err)...)
 		}
 		if info.ID == "" || w.state.Topics[info.ID] != "" {
 			continue
@@ -173,10 +178,15 @@ func (w *sessionTopicSync) poll(ctx context.Context) error {
 			title = w.engine.i18n.T(MsgUntitled) + " " + info.ID
 		}
 		if err := w.createAndBind(ctx, info.ID, title); err != nil {
-			return err
+			failures = append(failures, err)
+			if errors.Is(err, errSessionTopicSyncPersistence) {
+				return errors.Join(failures...)
+			}
 		}
 	}
-	return w.mirrorMessages(ctx)
+	// Discovery or topic-creation failures must not freeze existing feeds.
+	// Persistence failures stop all side effects until the next save succeeds.
+	return errors.Join(append(failures, w.mirrorMessages(ctx))...)
 }
 
 func (w *sessionTopicSync) createAndBind(ctx context.Context, id, title string) error {

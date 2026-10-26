@@ -126,12 +126,14 @@ type visibleCodexRecord struct {
 	Timestamp time.Time `json:"timestamp"`
 	Type      string    `json:"type"`
 	Payload   struct {
-		ID              string          `json:"id"`
-		Source          json.RawMessage `json:"source"`
-		Type            string          `json:"type"`
-		TurnID          string          `json:"turn_id"`
-		Message         string          `json:"message"`
-		Phase           string          `json:"phase"`
+		ID              string            `json:"id"`
+		Source          json.RawMessage   `json:"source"`
+		Type            string            `json:"type"`
+		TurnID          string            `json:"turn_id"`
+		Message         string            `json:"message"`
+		Phase           string            `json:"phase"`
+		Images          []json.RawMessage `json:"images"`
+		LocalImages     []json.RawMessage `json:"local_images"`
 		TurnAttribution struct {
 			TurnTrigger  string `json:"turn_trigger"`
 			ParentTurnID string `json:"parent_turn_id"`
@@ -283,6 +285,7 @@ func visibleMessageContent(record visibleCodexRecord) (core.SessionMessage, stri
 	message := core.SessionMessage{}
 	if p.Type == "user_message" {
 		message.Role, message.Content = "user", p.Message
+		message.Attachments = len(p.Images) + len(p.LocalImages)
 	}
 	if p.Type == "agent_message" && visibleMessagePhase(p.Phase) {
 		message.Role, message.Content = "assistant", p.Message
