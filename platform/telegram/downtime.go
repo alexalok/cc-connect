@@ -228,7 +228,7 @@ func (p *Platform) sendDowntimeNotice(ctx context.Context, bot telegramBot, dest
 	if dest.threadID != 0 {
 		key = core.MsgDowntimeMessagesSkippedTopic
 	}
-	text := p.noticeI18n().Tf(key, summary.count, summary.earliest.Format("2 Jan 2006 at 15:04:05 UTC"))
+	text := p.noticeI18n().Tf(key, summary.count, summary.earliest.UTC().Format("2006-01-02 15:04:05 UTC"))
 	var err error
 	if summary.noticeID != 0 {
 		_, err = bot.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: dest.chatID, MessageID: summary.noticeID, Text: text})
