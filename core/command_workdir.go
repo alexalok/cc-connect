@@ -57,7 +57,13 @@ func (e *Engine) sessionCommandWorkDir(agent Agent, sessions *SessionManager, in
 	if live != nil && live.Alive() && live.CurrentSessionID() == id {
 		if wd, ok := live.(interface{ GetWorkDir() string }); ok {
 			if dir := strings.TrimSpace(wd.GetWorkDir()); dir != "" {
-				return dir, nil
+				// Live sessions can retain a configured relative path. Like
+				// process startup, resolve it against the bridge's cwd.
+				absoluteDir, err := filepath.Abs(dir)
+				if err != nil {
+					return "", fmt.Errorf("resolve live session working directory %q: %w", dir, err)
+				}
+				return absoluteDir, nil
 			}
 		}
 	}

@@ -73,6 +73,33 @@ func TestCommandWorkDir_UsesOnlyTheSelectedLiveConversation(t *testing.T) {
 	}
 }
 
+func TestCommandWorkDir_NormalizesRelativeLiveDirectoryButRejectsRelativeSavedDirectory(t *testing.T) {
+	root := commandWorkDirTempDir(t)
+	t.Chdir(root)
+	if err := os.Mkdir("project", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{".", "project"} {
+		t.Run(dir, func(t *testing.T) {
+			agent := &cujDirectoryAgent{defaultWorkDir: root, workDirs: map[string]string{"chosen": dir}}
+			e := NewEngine("test", agent, nil, "", LangEnglish)
+			t.Cleanup(func() { _ = e.Stop() })
+			const key = "test:relative-cwd"
+			e.sessions.GetOrCreateActive(key).SetAgentSessionID("chosen", agent.Name())
+			msg := &Message{SessionKey: key}
+			if got, err := e.commandWorkDir(agent, e.sessions, key, msg); err == nil || got != "" {
+				t.Fatalf("relative saved directory accepted: %q, %v", got, err)
+			}
+			live := &cujDirectorySession{cujAgentSession: newCUJAgentSession(), id: "chosen", workDir: dir}
+			e.interactiveStates[key] = &interactiveState{agent: agent, agentSession: live}
+			got, err := e.commandWorkDir(agent, e.sessions, key, msg)
+			if want := filepath.Join(root, dir); err != nil || got != want {
+				t.Fatalf("live directory = %q, %v; want %q", got, err, want)
+			}
+		})
+	}
+}
+
 type commandWorkDirLookupAgent struct {
 	stubWorkDirAgent
 	savedDir string
