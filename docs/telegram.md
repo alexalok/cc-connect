@@ -2,6 +2,8 @@
 
 This guide walks you through connecting **cc-connect** to Telegram, so you can chat with your local Claude Code via a Telegram bot.
 
+To use a **regular Telegram account** instead, see the [Telegram user account guide](telegram-user.md).
+
 ## Prerequisites
 
 - A Telegram account

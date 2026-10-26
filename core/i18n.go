@@ -706,6 +706,18 @@ const (
 	MsgAgentRelayToolPrompt MsgKey = "agent_relay_tool_prompt"
 )
 
+const (
+	MsgTelegramUserCommand          MsgKey = "telegram_user_command"
+	MsgTelegramUserLoginUsage       MsgKey = "telegram_user_login_usage"
+	MsgTelegramUserPhone            MsgKey = "telegram_user_phone"
+	MsgTelegramUserCode             MsgKey = "telegram_user_code"
+	MsgTelegramUserPassword         MsgKey = "telegram_user_password"
+	MsgTelegramUserLoginSuccess     MsgKey = "telegram_user_login_success"
+	MsgTelegramUserTerminalRequired MsgKey = "telegram_user_terminal_required"
+	MsgTelegramUserExistingAccount  MsgKey = "telegram_user_existing_account"
+	MsgTelegramUserDisabled         MsgKey = "telegram_user_disabled"
+)
+
 var messages = map[MsgKey]map[Language]string{
 	MsgTopicOpenerAmbiguous: {
 		LangEnglish:            "I couldn't determine which topic this message belongs to, so I haven't processed it. Please resend it inside the intended topic.",
@@ -727,6 +739,69 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "抱歉，我剛才離線了。此話題中有 %d 則訊息已略過，最早傳送於 %s。仍需處理的內容請重新傳送。",
 		LangJapanese:           "オフラインになっており、申し訳ありません。このトピックで %d 件のメッセージをスキップしました（最初の送信日時: %s）。まだ必要な内容は再送してください。",
 		LangSpanish:            "Lo siento, estaba desconectado. Omití %d mensajes en este tema, a partir de %s. Vuelve a enviar lo que siga siendo relevante.",
+	},
+	MsgTelegramUserCommand: {
+		LangEnglish:            "Authenticate a regular Telegram account (telegram-user login --help)",
+		LangChinese:            "登录普通 Telegram 账号（telegram-user login --help）",
+		LangTraditionalChinese: "登入一般 Telegram 帳號（telegram-user login --help）",
+		LangJapanese:           "通常の Telegram アカウントで認証（telegram-user login --help）",
+		LangSpanish:            "Autenticar una cuenta normal de Telegram (telegram-user login --help)",
+	},
+	MsgTelegramUserLoginUsage: {
+		LangEnglish:            "Usage: cc-connect telegram-user login [--config PATH] [--project NAME]\nLog in once to the regular Telegram account configured as telegram_user. Enter the phone number, login code and optional two-step verification password locally. Start cc-connect normally afterward.",
+		LangChinese:            "用法：cc-connect telegram-user login [--config PATH] [--project NAME]\n登录配置为 telegram_user 的普通 Telegram 账号。在本地输入手机号、验证码和可选的两步验证密码。完成后正常启动 cc-connect。",
+		LangTraditionalChinese: "用法：cc-connect telegram-user login [--config PATH] [--project NAME]\n登入設定為 telegram_user 的一般 Telegram 帳號。在本機輸入電話號碼、驗證碼和選用的兩步驟驗證密碼。完成後正常啟動 cc-connect。",
+		LangJapanese:           "使い方: cc-connect telegram-user login [--config PATH] [--project NAME]\ntelegram_user として設定した通常の Telegram アカウントに一度ログインします。電話番号、ログインコード、必要なら二段階認証パスワードをローカルで入力してください。その後 cc-connect を通常どおり起動します。",
+		LangSpanish:            "Uso: cc-connect telegram-user login [--config PATH] [--project NAME]\nInicia sesión una vez en la cuenta normal de Telegram configurada como telegram_user. Introduce localmente el teléfono, el código y, si corresponde, la contraseña de verificación en dos pasos. Después inicia cc-connect normalmente.",
+	},
+	MsgTelegramUserPhone: {
+		LangEnglish:            "Phone number with country code (input hidden): ",
+		LangChinese:            "含国家代码的手机号（输入隐藏）：",
+		LangTraditionalChinese: "含國碼的電話號碼（輸入隱藏）：",
+		LangJapanese:           "国番号付きの電話番号（入力は非表示）: ",
+		LangSpanish:            "Teléfono con prefijo internacional (entrada oculta): ",
+	},
+	MsgTelegramUserCode: {
+		LangEnglish:            "Telegram login code (input hidden): ",
+		LangChinese:            "Telegram 登录验证码（输入隐藏）：",
+		LangTraditionalChinese: "Telegram 登入驗證碼（輸入隱藏）：",
+		LangJapanese:           "Telegram のログインコード（入力は非表示）: ",
+		LangSpanish:            "Código de inicio de sesión de Telegram (entrada oculta): ",
+	},
+	MsgTelegramUserPassword: {
+		LangEnglish:            "Telegram two-step verification password (input hidden): ",
+		LangChinese:            "Telegram 两步验证密码（输入隐藏）：",
+		LangTraditionalChinese: "Telegram 兩步驟驗證密碼（輸入隱藏）：",
+		LangJapanese:           "Telegram の二段階認証パスワード（入力は非表示）: ",
+		LangSpanish:            "Contraseña de verificación en dos pasos de Telegram (entrada oculta): ",
+	},
+	MsgTelegramUserLoginSuccess: {
+		LangEnglish:            "Telegram user session saved (user ID: %d). You can now start cc-connect.",
+		LangChinese:            "Telegram 用户会话已保存（用户 ID：%d）。现在可以启动 cc-connect。",
+		LangTraditionalChinese: "Telegram 使用者工作階段已儲存（使用者 ID：%d）。現在可以啟動 cc-connect。",
+		LangJapanese:           "Telegram ユーザーセッションを保存しました（ユーザー ID: %d）。cc-connect を起動できます。",
+		LangSpanish:            "Sesión de usuario de Telegram guardada (ID: %d). Ya puedes iniciar cc-connect.",
+	},
+	MsgTelegramUserTerminalRequired: {
+		LangEnglish:            "Run telegram-user login in an interactive terminal to enter the login code and password securely.",
+		LangChinese:            "请在交互式终端中运行 telegram-user login，以安全输入验证码和密码。",
+		LangTraditionalChinese: "請在互動式終端機中執行 telegram-user login，以安全輸入驗證碼和密碼。",
+		LangJapanese:           "コードとパスワードを安全に入力するため、対話型ターミナルで telegram-user login を実行してください。",
+		LangSpanish:            "Ejecuta telegram-user login en una terminal interactiva para introducir el código y la contraseña de forma segura.",
+	},
+	MsgTelegramUserExistingAccount: {
+		LangEnglish:            "Use an existing Telegram account; account creation is not supported.",
+		LangChinese:            "请使用现有的 Telegram 账号；不支持创建账号。",
+		LangTraditionalChinese: "請使用現有的 Telegram 帳號；不支援建立帳號。",
+		LangJapanese:           "既存の Telegram アカウントを使用してください。アカウントの新規作成には対応していません。",
+		LangSpanish:            "Utiliza una cuenta de Telegram existente; no se admite crear cuentas.",
+	},
+	MsgTelegramUserDisabled: {
+		LangEnglish:            "Telegram user accounts are disabled in this build. Rebuild without no_telegram_user.",
+		LangChinese:            "此构建禁用了 Telegram 用户账号。请在不使用 no_telegram_user 的情况下重新构建。",
+		LangTraditionalChinese: "此建置停用了 Telegram 使用者帳號。請不使用 no_telegram_user 重新建置。",
+		LangJapanese:           "このビルドでは Telegram ユーザーアカウントが無効です。no_telegram_user を外して再ビルドしてください。",
+		LangSpanish:            "Las cuentas de usuario de Telegram están deshabilitadas en esta compilación. Compila de nuevo sin no_telegram_user.",
 	},
 	MsgStarting: {
 		LangEnglish:            "⏳ Processing...",

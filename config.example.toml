@@ -1223,6 +1223,28 @@ app_secret = "your-feishu-app-secret"
 #                             # 进度展示：legacy | compact（默认）。Telegram 不支持富卡片，"card" 会被规整为 "compact"。
 #                             # 设为 "legacy" 可关闭流式 edit。
 
+# Telegram user account via MTProto / Telegram 普通用户账号
+# Obtain api_id/api_hash at my.telegram.org, then authenticate once in a terminal:
+# 在 my.telegram.org 获取 api_id/api_hash，然后在终端中登录一次：
+#   cc-connect telegram-user login --config /path/config.toml --project my-project
+# See docs/telegram-user.md. Text and captions; no BotFather token required.
+# 详见 docs/telegram-user.md。支持文本和媒体说明，无需 BotFather token。
+#
+# [[projects.platforms]]
+# type = "telegram_user"
+#
+# [projects.platforms.options]
+# api_id = 12345
+# api_hash = "${TELEGRAM_API_HASH}"
+# session_file = "~/.cc-connect/telegram-user.session.json" # Private auth session / 私密登录会话
+# allow_from = "123456789"       # Required numeric sender IDs; "*" permits all / 必填，发送者 ID；"*" 允许所有
+# allow_chats = ""               # Optional chat ID allowlist / 可选聊天 ID 白名单
+# group_reply_all = false         # Otherwise require a mention in groups / 默认群聊需要 @
+# share_session_in_channel = false
+# rate_limit_messages = 10        # Per sender across all chats / 每个发送者跨所有聊天
+# rate_limit_window_seconds = 60  # Rolling window; excess messages silently dropped / 滚动窗口，超出消息静默丢弃
+# proxy = "socks5://127.0.0.1:1080" # Optional SOCKS5 proxy / 可选 SOCKS5 代理
+
 # Matrix (uncomment to enable / 取消注释以启用)
 # 1. Create an account on your Matrix homeserver (matrix.org or self-hosted)
 #    在 Matrix 服务器上创建账号（matrix.org 或自建服务器）
