@@ -54,6 +54,20 @@ type ReplyContextReconstructor interface {
 	ReconstructReplyCtx(sessionKey string) (any, error)
 }
 
+// SessionDiscoverer finds persistent, top-level conversations created since the
+// supplied time. Discovery must be read-only and must exclude child agents.
+type SessionDiscoverer interface {
+	DiscoverSessions(ctx context.Context, since time.Time) ([]AgentSessionInfo, error)
+}
+
+// SessionTopicCreator opts a platform into creating topics for discovered chats.
+// Target is a stable, explicitly configured destination, never inferred from
+// incoming messages. CreateSessionTopic returns the normal inbound session key.
+type SessionTopicCreator interface {
+	SessionTopicSyncConfig() (target string, interval time.Duration)
+	CreateSessionTopic(ctx context.Context, title string) (sessionKey string, err error)
+}
+
 // RelayGroupVisibilityTarget is an optional interface for platforms that
 // want to customise the session key used when echoing relay request /
 // response messages into the group chat for visibility.  Platforms that

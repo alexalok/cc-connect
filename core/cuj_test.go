@@ -367,6 +367,182 @@ func runArchiveJourney(t *testing.T, retryTopicDeletion bool) {
 	visible("Fresh conversation thread-2")
 }
 
+type cujTopicDiscoveryAgent struct {
+	cujDirectoryAgent
+}
+
+func (a *cujTopicDiscoveryAgent) DiscoverSessions(context.Context, time.Time) ([]AgentSessionInfo, error) {
+	return append([]AgentSessionInfo(nil), a.sessions...), nil
+}
+
+func (a *cujTopicDiscoveryAgent) GetSessionHistory(context.Context, string, int) ([]HistoryEntry, error) {
+	return []HistoryEntry{{Role: "user", Content: "Original desktop question", Timestamp: time.Now()}}, nil
+}
+
+func (a *cujTopicDiscoveryAgent) DeleteSession(_ context.Context, id string) error {
+	delete(a.workDirs, id)
+	for i, info := range a.sessions {
+		if info.ID == id {
+			a.sessions = append(a.sessions[:i], a.sessions[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
+func TestCUJ_B13_ExternalChatBecomesResumableTopic(t *testing.T) {
+	t.Run("ImmediateReplyWaitsForBinding", testCUJExternalTopicImmediateReply)
+	t.Run("DeletedChatStaysDeletedAfterRestart", testCUJExternalTopicDeletion)
+	a := &cujTopicDiscoveryAgent{cujDirectoryAgent: cujDirectoryAgent{
+		defaultWorkDir: "/default", workDirs: map[string]string{"desktop-chat": "/desktop/project"},
+	}}
+	p := &topicSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, target: "owner"}
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	e, worker := newTopicSyncTest(t, a, p, path)
+	// User creates a chat in another client. The external boundary exposes it
+	// on the next discovery tick, and the user sees its new topic title.
+	a.sessions = []AgentSessionInfo{{ID: "desktop-chat", Summary: "Desktop project"}}
+	if err := worker.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if sent := strings.Join(p.getSent(), "\n"); !strings.Contains(sent, "topic: Desktop project") {
+		t.Fatalf("new topic was not visible: %s", sent)
+	}
+	key := p.keys[0]
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	send := func(engine *Engine, content string) {
+		p.clearSent()
+		engine.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", UserID: "owner", Content: content, ReplyCtx: key})
+	}
+	// User action 1: inspect the linked conversation.
+	send(e, "/current")
+	if !env.sentContains("desktop-chat") {
+		t.Fatalf("wrong chat: %v", p.getSent())
+	}
+	// User action 2: inspect native history before sending a bot message.
+	send(e, "/history")
+	if !env.sentContains("Original desktop question") {
+		t.Fatalf("native history missing: %v", p.getSent())
+	}
+	// User action 3: continue in the topic, using the native ID and directory.
+	send(e, "continue this work")
+	env.waitFor("native chat continuation", 3*time.Second, func() bool {
+		return env.sentContains("session=desktop-chat cwd=/desktop/project")
+	})
+	if err := e.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	e2, worker2 := newTopicSyncTest(t, a, p, path)
+	if err := worker2.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.keys) != 1 {
+		t.Fatalf("restart duplicated the topic: %v", p.keys)
+	}
+	// User action 4: after a restart, the topic still selects the same chat.
+	send(e2, "/current")
+	if !env.sentContains("desktop-chat") {
+		t.Fatalf("restart lost the link: %v", p.getSent())
+	}
+}
+
+func testCUJExternalTopicImmediateReply(t *testing.T) {
+	a := &cujTopicDiscoveryAgent{cujDirectoryAgent: cujDirectoryAgent{
+		defaultWorkDir: "/default", workDirs: map[string]string{"native": "/native/project"},
+		sessions: []AgentSessionInfo{{ID: "native", Summary: "Native chat"}},
+	}}
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCreation := func() { releaseOnce.Do(func() { close(release) }) }
+	p := &topicSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, target: "owner", created: make(chan string, 1), release: release}
+	e, worker := newTopicSyncTest(t, a, p, filepath.Join(t.TempDir(), "sessions.json"))
+	polled := make(chan error, 1)
+	go func() { polled <- worker.poll(e.ctx) }()
+	t.Cleanup(func() { releaseCreation(); <-polled })
+	key := <-p.created // Telegram has exposed the topic before returning its API result.
+	var received sync.WaitGroup
+	send := func(content string) {
+		e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", UserID: "owner", Content: content, ReplyCtx: key})
+	}
+	// Action 1: immediately ask for the chat selected by the new topic.
+	initialReply := make(chan struct{})
+	received.Add(1)
+	go func() { defer received.Done(); send("/current"); close(initialReply) }()
+	t.Cleanup(func() { releaseCreation(); received.Wait() })
+	select {
+	case <-initialReply:
+		t.Fatal("incoming reply was processed before the topic could be bound")
+	case <-time.After(50 * time.Millisecond):
+	}
+	releaseCreation()
+	select {
+	case <-initialReply:
+	case <-time.After(3 * time.Second):
+		t.Fatal("incoming reply stayed blocked")
+	}
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	if !env.sentContains("native") {
+		t.Fatalf("wrong chat selected: %v", p.getSent())
+	}
+	// Actions 2 and 3: read the native history, then continue that conversation.
+	p.clearSent()
+	send("/history")
+	if !env.sentContains("Original desktop question") {
+		t.Fatalf("native history missing: %v", p.getSent())
+	}
+	p.clearSent()
+	send("continue this work")
+	env.waitFor("native continuation after immediate reply", 3*time.Second, func() bool {
+		return env.sentContains("session=native cwd=/native/project")
+	})
+}
+
+func testCUJExternalTopicDeletion(t *testing.T) {
+	a := &cujTopicDiscoveryAgent{cujDirectoryAgent: cujDirectoryAgent{
+		defaultWorkDir: "/default", workDirs: map[string]string{"native": "/native/project"},
+		sessions: []AgentSessionInfo{{ID: "native", Summary: "Native chat"}},
+	}}
+	p := &topicSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, target: "owner"}
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	e, worker := newTopicSyncTest(t, a, p, path)
+	if err := worker.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	key := p.keys[0]
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	send := func(engine *Engine, target, content string) {
+		p.clearSent()
+		engine.ReceiveMessage(p, &Message{SessionKey: target, Platform: "test", UserID: "owner", Content: content, ReplyCtx: target})
+	}
+	// Action 1: inspect the imported topic's conversation.
+	send(e, key, "/current")
+	if !env.sentContains("native") {
+		t.Fatalf("native conversation missing: %v", p.getSent())
+	}
+	// Action 2: delete that conversation from another topic.
+	send(e, "test:owner:other", "/delete native")
+	if !env.sentContains(e.i18n.Tf(MsgDeleteSuccess, "Native chat")) {
+		t.Fatalf("delete did not succeed: %v", p.getSent())
+	}
+	if err := e.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	e2, worker2 := newTopicSyncTest(t, a, p, path)
+	if err := worker2.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Action 3: after restarting, the topic must not select the deleted ID.
+	send(e2, key, "/current")
+	if env.sentContains("native") || !env.sentContains(e2.i18n.T(MsgSessionNotStarted)) {
+		t.Fatalf("restart resurrected deleted conversation: %v", p.getSent())
+	}
+	// Action 4: a new message can start a conversation instead of failing to resume.
+	send(e2, key, "start new work")
+	env.waitFor("fresh conversation after deletion", 3*time.Second, func() bool {
+		return env.sentContains("session=fresh-session cwd=/default")
+	})
+}
+
 // cujAgentSession is an AgentSession whose reply is controllable per-Send.
 // Tests can set reply (and optionally toolEvent) before each Send to drive
 // scenarios like "agent calls tool", "agent returns error", "agent succeeds".

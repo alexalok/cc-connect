@@ -32,6 +32,14 @@ type startupBot struct {
 	setOffset func(int64)
 }
 
+func (b *startupBot) CreateForumTopic(ctx context.Context, params *tgbot.CreateForumTopicParams) (*models.ForumTopic, error) {
+	creator, ok := b.telegramBot.(forumTopicCreator)
+	if !ok {
+		return nil, core.ErrNotSupported
+	}
+	return creator.CreateForumTopic(ctx, params)
+}
+
 func (b *startupBot) setPollingOffset(lastID int64) { b.setOffset(lastID) }
 
 func (b *startupBot) pendingUpdates(ctx context.Context, offset int64) ([]*models.Update, error) {
