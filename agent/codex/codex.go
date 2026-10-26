@@ -506,13 +506,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	cliBin := a.cmd
 	cliExtraArgs := a.cliExtraArgs
 	workDir := a.workDir
-	// Order matters for MergeEnv override semantics (later wins):
-	//   1. configEnv — static env from [projects.agent.options.env]
-	//   2. providerEnv — per-provider keys (OPENAI_API_KEY etc.)
-	//   3. sessionEnv — runtime overrides from /env or admin actions
-	extraEnv := append([]string(nil), a.configEnv...)
-	extraEnv = append(extraEnv, a.providerEnvLocked()...)
-	extraEnv = append(extraEnv, a.sessionEnv...)
+	extraEnv := a.mergedSessionEnvLocked()
 	var baseURL string
 	if a.activeIdx >= 0 && a.activeIdx < len(a.providers) {
 		if m := a.providers[a.activeIdx].Model; m != "" {
@@ -528,7 +522,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 		// A relative Codex home must not select a different profile when a
 		// resumed conversation launches in another working directory.
 		var err error
-		codexHome, err = filepath.Abs(resolveCodexHomeDir(codexHome))
+		codexHome, err = absoluteCodexHome(codexHome, extraEnv)
 		if err != nil {
 			return nil, fmt.Errorf("codex: resolve profile directory: %w", err)
 		}
@@ -561,26 +555,35 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 
 func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
 	a.mu.RLock()
-	codexHome := a.codexHome
+	codexHome, err := a.sessionCodexHomeLocked()
 	workDir := a.workDir
 	if a.listAllSessions {
 		workDir = ""
 	}
 	a.mu.RUnlock()
+	if err != nil {
+		return nil, err
+	}
 	return listCodexSessions(workDir, codexHome)
 }
 
 func (a *Agent) GetSessionHistory(_ context.Context, sessionID string, limit int) ([]core.HistoryEntry, error) {
 	a.mu.RLock()
-	codexHome := a.codexHome
+	codexHome, err := a.sessionCodexHomeLocked()
 	a.mu.RUnlock()
+	if err != nil {
+		return nil, err
+	}
 	return getSessionHistory(sessionID, codexHome, limit)
 }
 
 func (a *Agent) DeleteSession(_ context.Context, sessionID string) error {
 	a.mu.RLock()
-	codexHome := a.codexHome
+	codexHome, err := a.sessionCodexHomeLocked()
 	a.mu.RUnlock()
+	if err != nil {
+		return err
+	}
 	path := findSessionFile(sessionID, codexHome)
 	if path == "" {
 		return fmt.Errorf("session file not found: %s", sessionID)
@@ -589,6 +592,22 @@ func (a *Agent) DeleteSession(_ context.Context, sessionID string) error {
 }
 
 func (a *Agent) Stop() error { return nil }
+
+// Call with a.mu held. Later environment layers override earlier ones.
+func (a *Agent) mergedSessionEnvLocked() []string {
+	env := append([]string(nil), a.configEnv...)
+	env = append(env, a.providerEnvLocked()...)
+	return append(env, a.sessionEnv...)
+}
+
+// Session discovery/history must use the same profile as new and resumed turns.
+// Keep the existing resolution when all-directory discovery is not enabled.
+func (a *Agent) sessionCodexHomeLocked() (string, error) {
+	if !a.listAllSessions {
+		return a.codexHome, nil
+	}
+	return absoluteCodexHome(a.codexHome, a.mergedSessionEnvLocked())
+}
 
 // SetMode changes the approval mode for future sessions.
 func (a *Agent) SetMode(mode string) {

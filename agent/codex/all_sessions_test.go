@@ -115,6 +115,9 @@ func TestAllSessionsCLIProcess(t *testing.T) {
 	}
 	cwd, _ := os.Getwd()
 	want := os.Getenv("CC_ALL_SESSIONS_EXPECT_CWD")
+	if home := os.Getenv("CC_ALL_SESSIONS_EXPECT_HOME"); home != "" && os.Getenv("CODEX_HOME") != home {
+		os.Exit(28)
+	}
 	if cwd != want {
 		fmt.Fprintf(os.Stderr, "process cwd = %q, want %q\n", cwd, want)
 		os.Exit(21)
@@ -301,5 +304,93 @@ func TestStartSession_AllDirectoriesPinsRelativeCodexHome(t *testing.T) {
 				t.Fatalf("session cwd = %q, want %q", cs.GetWorkDir(), dirB)
 			}
 		})
+	}
+}
+
+func TestAllDirectories_PreservesCodexHomeEnvironmentOverrides(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("USERPROFILE", root)
+	homes := map[string]string{}
+	dir := t.TempDir()
+	for _, source := range []string{"process", "project", "provider", "session", "explicit", "default"} {
+		home := filepath.Join(root, source)
+		if source == "default" {
+			home = filepath.Join(root, ".codex")
+		}
+		homes[source] = home
+		path := writeAllSessionsRollout(t, home, "id-"+source, dir, "cli")
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = f.WriteString(`{"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"profile-specific history"}]}}` + "\n")
+		_ = f.Close()
+	}
+	t.Setenv("CODEX_HOME", homes["process"])
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, backend := range []string{"exec", "app_server"} {
+		for _, tc := range []struct {
+			name, project, provider, session, explicit, want string
+			clear                                            bool
+		}{
+			{name: "project", project: "project", want: "project"},
+			{name: "provider", project: "project", provider: "provider", want: "provider"},
+			{name: "session", project: "project", provider: "provider", session: "session", want: "session"},
+			{name: "explicit", project: "project", session: "session", explicit: "explicit", want: "explicit"},
+			{name: "cleared", project: "project", clear: true, want: "default"},
+		} {
+			t.Run(backend+"/"+tc.name, func(t *testing.T) {
+				env := map[string]string{"CC_ALL_SESSIONS_HELPER": "1", "CC_ALL_SESSIONS_EXPECT_CWD": dir, "CC_ALL_SESSIONS_EXPECT_HOME": homes[tc.want]}
+				if tc.project != "" {
+					env["CODEX_HOME"] = homes[tc.project]
+				}
+				opts := map[string]any{"cmd": []string{bin, "-test.run=^TestAllSessionsCLIProcess$", "--", "all-sessions-fixture"}, "work_dir": dir, "backend": backend, "list_all_sessions": true, "env": env}
+				if tc.explicit != "" {
+					opts["codex_home"] = homes[tc.explicit]
+				}
+				a, err := New(opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				agent := a.(*Agent)
+				if tc.provider != "" {
+					agent.SetProviders([]core.ProviderConfig{{Name: "test-provider", Env: map[string]string{"CODEX_HOME": homes[tc.provider]}}})
+					if !agent.SetActiveProvider("test-provider") {
+						t.Fatal("provider not found")
+					}
+				}
+				if tc.session != "" {
+					agent.SetSessionEnv([]string{"CODEX_HOME=" + homes[tc.session]})
+				}
+				if tc.clear {
+					agent.SetSessionEnv([]string{"CODEX_HOME="})
+				}
+				sessions, err := agent.ListSessions(context.Background())
+				id := "id-" + tc.want
+				if err != nil || len(sessions) != 1 || sessions[0].ID != id {
+					t.Fatalf("sessions=%v err=%v, want %s", sessions, err, id)
+				}
+				history, err := agent.GetSessionHistory(context.Background(), id, 1)
+				if err != nil || len(history) != 1 {
+					t.Fatalf("wrong profile history: %v, %v", history, err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				for _, resumeID := range []string{"", id} {
+					session, err := agent.StartSession(ctx, resumeID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if cs, ok := session.(*codexSession); ok && getenvFromList(cs.extraEnv, "CODEX_HOME") != homes[tc.want] {
+						t.Fatal("exec selected another Codex home")
+					}
+					_ = session.Close()
+				}
+			})
+		}
 	}
 }
