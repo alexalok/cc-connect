@@ -247,6 +247,45 @@ If multiple topics are created before their opening messages arrive, the
 missing IDs can be ambiguous. Those messages are not sent to an agent;
 cc-connect asks the sender to resend them inside the intended topic.
 
+### 6.4 New Codex Chats as DM Topics
+
+To automatically create a private topic when you start a new Codex chat in
+the TUI or desktop app, enable private topics in BotFather, start a DM with
+the bot, and set an explicit destination in the Telegram platform options:
+
+```toml
+[[projects.platforms]]
+type = "telegram"
+[projects.platforms.options]
+token = "YOUR_BOT_TOKEN"
+allow_from = "123456789"
+topic_sync_chat_id = "123456789" # Your private chat ID (also your user ID)
+topic_sync_interval_seconds = 10
+```
+
+This is opt-in and works with the Codex agent in a single-workspace project.
+Set `list_all_sessions = true` under `[projects.agent.options]` to discover
+chats across working directories; otherwise discovery is limited to the
+configured `work_dir`. Clients must share the same `codex_home` / `CODEX_HOME`
+on the bot's host. Chats stored on another machine are not discovered.
+
+Only chats created after sync is first enabled are imported. The cutoff and
+topic links are stored beside the project's session file, so normal restarts
+retain existing links and catch up on chats created while the bot was offline.
+Old chats that you resume or rename are not imported. Archived chats,
+subagents, and chats already linked by cc-connect are excluded.
+
+Each topic uses the Codex chat title (or its first prompt when available).
+Replies resume that same chat in its saved working directory. `/history`
+can read its native history before the first bot turn. Discovery does not
+start a Codex turn; it creates the topic and saves the link. This feature
+syncs chat discovery and continuation, not live message streaming or
+subsequent title, archive, or deletion changes between clients.
+
+Keep the session files and their `.topic-sync-*.json` companions together
+when backing up or moving the bot. A malformed sync file stops startup
+instead of silently resetting the cutoff and losing the saved links.
+
 ---
 
 ## Usage Example

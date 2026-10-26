@@ -113,6 +113,8 @@ type Platform struct {
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
 	topicRouting          privateTopicRouting
+	topicSyncChatID       int64
+	topicSyncInterval     time.Duration
 	i18n                  *core.I18n
 	downtime              *downtimeDrain
 	processedCursor       updateCursor // protected by mu
@@ -145,6 +147,10 @@ func New(opts map[string]any) (core.Platform, error) {
 	}
 	allowFrom, _ := opts["allow_from"].(string)
 	core.CheckAllowFrom("telegram", allowFrom)
+	topicChatID, topicInterval, err := parseTopicSyncOptions(opts, allowFrom)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build HTTP client with optional proxy support.
 	// Timeout must exceed the server-side long-poll duration (pollTimeout − 1s = 59s)
@@ -189,6 +195,8 @@ func New(opts map[string]any) (core.Platform, error) {
 	return &Platform{
 		token:                 token,
 		allowFrom:             allowFrom,
+		topicSyncChatID:       topicChatID,
+		topicSyncInterval:     topicInterval,
 		groupReplyAll:         groupReplyAll,
 		shareSessionInChannel: shareSessionInChannel,
 		enableReactions:       enableReactions,
