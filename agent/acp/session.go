@@ -221,10 +221,8 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 	// capabilities: `session/load` (loadSession) and `session/resume`
 	// (sessionCapabilities.resume). Servers are free to implement only
 	// the latter, so prefer the newer `session/resume` and fall back to
-	// `session/load`; a server advertising neither is simply started
-	// fresh. Resuming by a new session id would silently drop the
-	// conversation, so this must not degrade to `session/new` while a
-	// resume capability is still on the table.
+	// `session/load`. Return failures to the engine so its configured
+	// resume policy decides whether starting a fresh session is allowed.
 	if resumeSessionID != "" && resumeSessionID != core.ContinueSession {
 		var resumeMethod string
 		switch {
@@ -232,6 +230,9 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 			resumeMethod = "session/resume"
 		case initOut.AgentCapabilities.LoadSession:
 			resumeMethod = "session/load"
+		}
+		if resumeMethod == "" {
+			return fmt.Errorf("acp: cannot resume saved session: server supports neither session/resume nor session/load")
 		}
 		// Both resume methods may replay conversation history the way
 		// `session/load` does, and a long replay can fill the bounded
@@ -241,44 +242,40 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 		// that guard lands it has to cover this path too, otherwise
 		// servers advertising `resume` reintroduce the deadlock #2038
 		// was written to fix.
-		if resumeMethod != "" {
-			resumeRes, err := s.tr.call(s.ctx, resumeMethod, map[string]any{
-				"sessionId":  resumeSessionID,
-				"cwd":        s.workDir,
-				"mcpServers": []any{},
-			})
-			if err != nil {
-				slog.Warn("acp: session resume failed, starting new session",
-					"method", resumeMethod, "error", err)
-			} else {
-				var rr struct {
-					SessionID string         `json:"sessionId"`
-					Modes     *acpModesBlock `json:"modes"`
-				}
-				if uerr := json.Unmarshal(resumeRes, &rr); uerr != nil {
-					// The body is allowed to be a configOptions-only
-					// object, but a malformed one is worth a trace: we
-					// adopt the requested id regardless, so this line is
-					// the only evidence it happened.
-					slog.Debug("acp: parse resume result failed, keeping requested session id",
-						"method", resumeMethod, "error", uerr)
-				}
-				// A successful resume acknowledges the id we asked for.
-				// Servers may echo it back, but some (e.g. servers that
-				// only return configOptions) omit it - adopting the
-				// requested id is the correct reading either way. Without
-				// this, a server that returns no sessionId would never be
-				// resumed and the conversation would be silently replaced
-				// by a fresh session.
-				resumedID := rr.SessionID
-				if resumedID == "" {
-					resumedID = resumeSessionID
-				}
-				s.setACPSessionID(resumedID)
-				s.absorbModes(rr.Modes)
-				return nil
-			}
+		resumeRes, err := s.tr.call(s.ctx, resumeMethod, map[string]any{
+			"sessionId":  resumeSessionID,
+			"cwd":        s.workDir,
+			"mcpServers": []any{},
+		})
+		if err != nil {
+			return fmt.Errorf("acp: %s: %w", resumeMethod, err)
 		}
+		var rr struct {
+			SessionID string         `json:"sessionId"`
+			Modes     *acpModesBlock `json:"modes"`
+		}
+		if uerr := json.Unmarshal(resumeRes, &rr); uerr != nil {
+			// The body is allowed to be a configOptions-only
+			// object, but a malformed one is worth a trace: we
+			// adopt the requested id regardless, so this line is
+			// the only evidence it happened.
+			slog.Debug("acp: parse resume result failed, keeping requested session id",
+				"method", resumeMethod, "error", uerr)
+		}
+		// A successful resume acknowledges the id we asked for.
+		// Servers may echo it back, but some (e.g. servers that
+		// only return configOptions) omit it - adopting the
+		// requested id is the correct reading either way. Without
+		// this, a server that returns no sessionId would never be
+		// resumed and the conversation would be silently replaced
+		// by a fresh session.
+		resumedID := rr.SessionID
+		if resumedID == "" {
+			resumedID = resumeSessionID
+		}
+		s.setACPSessionID(resumedID)
+		s.absorbModes(rr.Modes)
+		return nil
 	}
 
 	newParams := map[string]any{
