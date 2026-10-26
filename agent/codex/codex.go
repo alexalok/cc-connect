@@ -40,6 +40,7 @@ type Agent struct {
 	backend         string // "exec" | "app_server"
 	appServerURL    string
 	codexHome       string
+	listAllSessions bool
 	systemPrompt    string
 	appendPrompt    string
 	cmd             string   // explicit CLI command; empty enables discovery
@@ -62,6 +63,7 @@ func New(opts map[string]any) (core.Agent, error) {
 	backend, _ := opts["backend"].(string)
 	appServerURL, _ := opts["app_server_url"].(string)
 	codexHome, _ := opts["codex_home"].(string)
+	listAllSessions, _ := opts["list_all_sessions"].(bool)
 	systemPrompt, _ := opts["system_prompt"].(string)
 	appendPrompt, _ := opts["append_system_prompt"].(string)
 	mode = normalizeMode(mode)
@@ -102,6 +104,7 @@ func New(opts map[string]any) (core.Agent, error) {
 		backend:         backend,
 		appServerURL:    appServerURL,
 		codexHome:       strings.TrimSpace(codexHome),
+		listAllSessions: listAllSessions,
 		systemPrompt:    strings.TrimSpace(systemPrompt),
 		appendPrompt:    strings.TrimSpace(appendPrompt),
 		cmd:             cmd,
@@ -518,7 +521,24 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 		baseURL = a.providers[a.activeIdx].BaseURL
 	}
 	provName, provAPIKey, provWireAPI, provHeaders := a.activeProviderCodexConfig()
+	listAllSessions := a.listAllSessions
 	a.mu.Unlock()
+
+	if listAllSessions {
+		// A relative Codex home must not select a different profile when a
+		// resumed conversation launches in another working directory.
+		var err error
+		codexHome, err = filepath.Abs(resolveCodexHomeDir(codexHome))
+		if err != nil {
+			return nil, fmt.Errorf("codex: resolve profile directory: %w", err)
+		}
+		if sessionID != "" && sessionID != core.ContinueSession {
+			workDir, err = codexResumeWorkDir(sessionID, codexHome)
+			if err != nil {
+				return nil, fmt.Errorf("codex: resume working directory: %w", err)
+			}
+		}
+	}
 
 	if provName != "" {
 		if err := ensureCodexProviderConfig(codexHome, provName, baseURL, provWireAPI, provHeaders); err != nil {
@@ -543,6 +563,9 @@ func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error)
 	a.mu.RLock()
 	codexHome := a.codexHome
 	workDir := a.workDir
+	if a.listAllSessions {
+		workDir = ""
+	}
 	a.mu.RUnlock()
 	return listCodexSessions(workDir, codexHome)
 }
@@ -586,8 +609,9 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	defer a.mu.RUnlock()
 
 	opts := map[string]any{
-		"mode":    a.mode,
-		"backend": a.backend,
+		"mode":              a.mode,
+		"backend":           a.backend,
+		"list_all_sessions": a.listAllSessions,
 	}
 	if a.cmd != "" {
 		opts["cmd"] = append([]string{a.cmd}, a.cliExtraArgs...)
