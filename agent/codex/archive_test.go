@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -108,5 +109,41 @@ func TestArchiveSession_RejectsMissingID(t *testing.T) {
 		if err := a.ArchiveSession(context.Background(), id); err == nil || !strings.Contains(err.Error(), "missing session ID") {
 			t.Fatalf("id %q: %v", id, err)
 		}
+	}
+}
+
+func TestArchiveSession_RelativeHomeMatchesSessionProfile(t *testing.T) {
+	root, workDir := t.TempDir(), t.TempDir()
+	t.Chdir(root)
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"explicit", "process", "project", "session"} {
+		t.Run(source, func(t *testing.T) {
+			t.Setenv("CODEX_HOME", "wrong-profile")
+			a := &Agent{
+				cmd: bin, cliExtraArgs: []string{"-test.run=^TestArchiveRPCProcess$", "--"},
+				workDir: workDir, listAllSessions: true,
+				configEnv: []string{"CC_ARCHIVE_HELPER=1", "CC_ARCHIVE_WORKDIR=" + workDir,
+					"CC_ARCHIVE_HOME=" + filepath.Join(root, "profile"), "CC_ARCHIVE_OVERRIDE=session"},
+			}
+			switch source {
+			case "explicit":
+				a.codexHome = "profile"
+			case "process":
+				t.Setenv("CODEX_HOME", "profile")
+			case "project":
+				a.configEnv = append(a.configEnv, "CODEX_HOME=profile")
+			case "session":
+				a.configEnv = append(a.configEnv, "CODEX_HOME=wrong-project-profile")
+				a.sessionEnv = []string{"CODEX_HOME=profile"}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := a.ArchiveSession(ctx, "thread-to-archive"); err != nil {
+				t.Fatalf("archive must use the profile resolved from the bridge directory: %v", err)
+			}
+		})
 	}
 }

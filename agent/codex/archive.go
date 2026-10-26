@@ -21,15 +21,18 @@ func (a *Agent) ArchiveSession(ctx context.Context, sessionID string) error {
 	ctx, cancel := context.WithTimeout(ctx, appServerRequestTimeout)
 	defer cancel()
 	a.mu.RLock()
-	extraEnv := append([]string(nil), a.configEnv...)
-	extraEnv = append(extraEnv, a.providerEnvLocked()...)
-	extraEnv = append(extraEnv, a.sessionEnv...)
+	codexHome, err := a.sessionCodexHomeLocked()
+	if err != nil {
+		a.mu.RUnlock()
+		return fmt.Errorf("codex: archive: resolve profile: %w", err)
+	}
+	extraEnv := a.mergedSessionEnvLocked()
 	s := &appServerSession{
 		cliBin:           a.cmd,
 		cliExtraArgs:     append([]string(nil), a.cliExtraArgs...),
 		url:              "stdio://",
 		workDir:          a.workDir,
-		codexHome:        a.codexHome,
+		codexHome:        codexHome,
 		extraEnv:         extraEnv,
 		ctx:              ctx,
 		cancel:           cancel,
