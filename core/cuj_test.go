@@ -255,8 +255,20 @@ func (a *cujTopicDiscoveryAgent) GetSessionHistory(context.Context, string, int)
 	return []HistoryEntry{{Role: "user", Content: "Original desktop question", Timestamp: time.Now()}}, nil
 }
 
+func (a *cujTopicDiscoveryAgent) DeleteSession(_ context.Context, id string) error {
+	delete(a.workDirs, id)
+	for i, info := range a.sessions {
+		if info.ID == id {
+			a.sessions = append(a.sessions[:i], a.sessions[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
 func TestCUJ_B13_ExternalChatBecomesResumableTopic(t *testing.T) {
 	t.Run("ImmediateReplyWaitsForBinding", testCUJExternalTopicImmediateReply)
+	t.Run("DeletedChatStaysDeletedAfterRestart", testCUJExternalTopicDeletion)
 	a := &cujTopicDiscoveryAgent{cujDirectoryAgent: cujDirectoryAgent{
 		defaultWorkDir: "/default", workDirs: map[string]string{"desktop-chat": "/desktop/project"},
 	}}
@@ -358,6 +370,52 @@ func testCUJExternalTopicImmediateReply(t *testing.T) {
 	send("continue this work")
 	env.waitFor("native continuation after immediate reply", 3*time.Second, func() bool {
 		return env.sentContains("session=native cwd=/native/project")
+	})
+}
+
+func testCUJExternalTopicDeletion(t *testing.T) {
+	a := &cujTopicDiscoveryAgent{cujDirectoryAgent: cujDirectoryAgent{
+		defaultWorkDir: "/default", workDirs: map[string]string{"native": "/native/project"},
+		sessions: []AgentSessionInfo{{ID: "native", Summary: "Native chat"}},
+	}}
+	p := &topicSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, target: "owner"}
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	e, worker := newTopicSyncTest(t, a, p, path)
+	if err := worker.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	key := p.keys[0]
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	send := func(engine *Engine, target, content string) {
+		p.clearSent()
+		engine.ReceiveMessage(p, &Message{SessionKey: target, Platform: "test", UserID: "owner", Content: content, ReplyCtx: target})
+	}
+	// Action 1: inspect the imported topic's conversation.
+	send(e, key, "/current")
+	if !env.sentContains("native") {
+		t.Fatalf("native conversation missing: %v", p.getSent())
+	}
+	// Action 2: delete that conversation from another topic.
+	send(e, "test:owner:other", "/delete native")
+	if !env.sentContains(e.i18n.Tf(MsgDeleteSuccess, "Native chat")) {
+		t.Fatalf("delete did not succeed: %v", p.getSent())
+	}
+	if err := e.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	e2, worker2 := newTopicSyncTest(t, a, p, path)
+	if err := worker2.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Action 3: after restarting, the topic must not select the deleted ID.
+	send(e2, key, "/current")
+	if env.sentContains("native") || !env.sentContains(e2.i18n.T(MsgSessionNotStarted)) {
+		t.Fatalf("restart resurrected deleted conversation: %v", p.getSent())
+	}
+	// Action 4: a new message can start a conversation instead of failing to resume.
+	send(e2, key, "start new work")
+	env.waitFor("fresh conversation after deletion", 3*time.Second, func() bool {
+		return env.sentContains("session=fresh-session cwd=/default")
 	})
 }
 

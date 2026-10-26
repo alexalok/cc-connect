@@ -102,11 +102,22 @@ func (w *sessionTopicSync) save() error {
 }
 
 func (w *sessionTopicSync) bind(key, id, title string) {
+	w.engine.sessions.bindSessionTopic(key, id, w.engine.agent.Name(), title)
+}
+
+func (sm *SessionManager) bindSessionTopic(key, id, agentName, title string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 	// A user may have deliberately used /new or /switch in this topic since
-	// it was imported. Never undo that selection when restarting.
-	if len(w.engine.sessions.ListSessions(key)) == 0 {
-		w.engine.sessions.SwitchToAgentSession(key, id, w.engine.agent.Name(), title)
+	// it was imported. Check deletion and existing choices atomically with
+	// creation, so a concurrent delete cannot be undone by recovery either.
+	if sm.deletedAgentSessionIDs[id] || len(sm.userSessions[key]) != 0 {
+		return
 	}
+	session := sm.createLocked(key, title)
+	session.SetAgentInfo(id, agentName, title)
+	session.MarkExplicitlyActivated()
+	sm.saveLocked()
 }
 
 func (w *sessionTopicSync) poll(ctx context.Context) error {
@@ -128,7 +139,7 @@ func (w *sessionTopicSync) poll(ctx context.Context) error {
 		// Recheck for every creation: the bot may have started a session while
 		// the discovery scan was running. Bot-originated chats already have a
 		// destination and must not be echoed back as a second topic.
-		if w.engine.sessions.hasAgentSession(info.ID) {
+		if w.engine.sessions.agentSessionDeleted(info.ID) || w.engine.sessions.hasAgentSession(info.ID) {
 			continue
 		}
 		title := strings.TrimSpace(info.Summary)

@@ -231,3 +231,32 @@ func TestSessionTopicSync_StopCancelsAndJoinsDiscovery(t *testing.T) {
 		t.Fatal("Stop did not cancel discovery")
 	}
 }
+
+func TestSessionTopicSync_DeletedNativeChatIsNotRestored(t *testing.T) {
+	for _, removeLocalFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint(removeLocalFirst), func(t *testing.T) {
+			a := &topicDiscoveryAgent{infos: []AgentSessionInfo{{ID: "native"}}}
+			p := &topicSyncPlatform{target: "owner"}
+			path := filepath.Join(t.TempDir(), "sessions.json")
+			e, w := newTopicSyncTest(t, a, p, path)
+			if err := w.poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			key := p.keys[0]
+			if removeLocalFirst {
+				e.sessions.DeleteByID(e.sessions.ActiveSessionID(key))
+			}
+			e.sessions.DeleteByAgentSessionID("native")
+			e2, w2 := newTopicSyncTest(t, a, p, path)
+			if e2.sessions.ActiveSessionID(key) != "" {
+				t.Fatal("restart restored an intentionally deleted conversation")
+			}
+			if err := w2.poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(p.keys) != 1 || e2.sessions.ActiveSessionID(key) != "" {
+				t.Fatal("stale discovery revived the deleted chat")
+			}
+		})
+	}
+}
