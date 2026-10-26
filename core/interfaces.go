@@ -60,6 +60,23 @@ type SessionDiscoverer interface {
 	DiscoverSessions(ctx context.Context, since time.Time) ([]AgentSessionInfo, error)
 }
 
+// SessionMessage is a completed, user-visible message from a native chat.
+// ID must be stable across reads/restarts and distinct for repeated messages.
+type SessionMessage struct {
+	ID          string
+	Role        string // user or assistant
+	Content     string
+	Attachments int // media represented by a localized placeholder
+}
+
+// SessionMessageSource supplies visible conversation messages in order, without
+// starting an agent turn. It excludes instructions, reasoning, tools, and turns
+// already delivered by this bridge. Validation checks any backend requirements.
+type SessionMessageSource interface {
+	ValidateSessionMessageSync() error
+	ReadSessionMessages(ctx context.Context, sessionID string) ([]SessionMessage, error)
+}
+
 // SessionTopicCreator opts a platform into creating topics for discovered chats.
 // Target is a stable, explicitly configured destination, never inferred from
 // incoming messages. CreateSessionTopic returns the normal inbound session key.

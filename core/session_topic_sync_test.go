@@ -55,7 +55,7 @@ func (p *topicSyncPlatform) CreateSessionTopic(_ context.Context, title string) 
 	return key, nil
 }
 
-func newTopicSyncTest(t *testing.T, a Agent, p *topicSyncPlatform, path string) (*Engine, *sessionTopicSync) {
+func newTopicSyncTest(t *testing.T, a Agent, p Platform, path string) (*Engine, *sessionTopicSync) {
 	t.Helper()
 	e := NewEngine("sync", a, []Platform{p}, path, LangEnglish)
 	t.Cleanup(func() {

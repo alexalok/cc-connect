@@ -15,6 +15,9 @@ import (
 type sessionTopicSyncState struct {
 	Since  time.Time         `json:"since"`
 	Topics map[string]string `json:"topics"` // native session ID -> platform session key
+	// Successful chunks per message; old topic-only journals start empty and
+	// catch up their linked chats without changing the new-chat cutoff.
+	Delivered map[string]map[string]int `json:"delivered,omitempty"`
 }
 
 // A worker owns its state and runs one poll at a time. The engine cancels and
@@ -26,6 +29,9 @@ type sessionTopicSync struct {
 	path     string
 	state    sessionTopicSyncState
 	interval time.Duration
+	messages SessionMessageSource
+	platform Platform
+	replies  ReplyContextReconstructor
 }
 
 func (e *Engine) prepareSessionTopicSync() ([]*sessionTopicSync, error) {
@@ -53,6 +59,16 @@ func (e *Engine) prepareSessionTopicSync() ([]*sessionTopicSync, error) {
 		worker := &sessionTopicSync{
 			engine: e, source: source, target: target, interval: interval,
 			path: fmt.Sprintf("%s.topic-sync-%x.json", e.sessions.StorePath(), key[:8]),
+		}
+		if messages, ok := e.agent.(SessionMessageSource); ok {
+			if err := messages.ValidateSessionMessageSync(); err != nil {
+				return nil, fmt.Errorf("session topic sync: %w", err)
+			}
+			replies, ok := p.(ReplyContextReconstructor)
+			if !ok {
+				return nil, fmt.Errorf("session topic sync: platform cannot address saved topics")
+			}
+			worker.messages, worker.platform, worker.replies = messages, p, replies
 		}
 		if err := worker.load(); err != nil {
 			return nil, err
@@ -85,6 +101,16 @@ func (w *sessionTopicSync) load() error {
 	for id, key := range w.state.Topics {
 		if id == "" || key == "" {
 			return fmt.Errorf("session topic sync: invalid saved topic link in %s", w.path)
+		}
+	}
+	for id, messages := range w.state.Delivered {
+		if w.state.Topics[id] == "" {
+			return fmt.Errorf("session topic sync: delivery progress has no topic")
+		}
+		for messageID, chunks := range messages {
+			if messageID == "" || chunks < 0 {
+				return fmt.Errorf("session topic sync: invalid delivery progress")
+			}
 		}
 	}
 	return nil
@@ -150,7 +176,7 @@ func (w *sessionTopicSync) poll(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	return w.mirrorMessages(ctx)
 }
 
 func (w *sessionTopicSync) createAndBind(ctx context.Context, id, title string) error {

@@ -50,6 +50,8 @@ type Agent struct {
 	configEnv       []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
 	sessionEnv      []string
 	mu              sync.RWMutex
+	messageCacheMu  sync.Mutex
+	messageCache    map[string]visibleMessageCache
 }
 
 func New(opts map[string]any) (core.Agent, error) {

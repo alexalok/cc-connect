@@ -264,6 +264,8 @@ topic_sync_interval_seconds = 10
 ```
 
 This is opt-in and works with the Codex agent in a single-workspace project.
+Set `backend = "app_server"` under `[projects.agent.options]`; mirroring
+uses its persisted turn-origin metadata to avoid echoing bot replies.
 Set `list_all_sessions = true` under `[projects.agent.options]` to discover
 chats across working directories; otherwise discovery is limited to the
 configured `work_dir`. Clients must share the same `codex_home` / `CODEX_HOME`
@@ -276,11 +278,19 @@ Old chats that you resume or rename are not imported. Archived chats,
 subagents, and chats already linked by cc-connect are excluded.
 
 Each topic uses the Codex chat title (or its first prompt when available).
+It receives the conversation's existing user messages and visible assistant
+messages, then keeps receiving new ones at the configured polling interval.
+Previously created empty sync topics catch up automatically after upgrading.
+Internal instructions, reasoning, and tool output are excluded. Attachments
+are represented by a note pointing to the original chat.
 Replies resume that same chat in its saved working directory. `/history`
 can read its native history before the first bot turn. Discovery does not
-start a Codex turn; it creates the topic and saves the link. This feature
-syncs chat discovery and continuation, not live message streaming or
-subsequent title, archive, or deletion changes between clients.
+start a Codex turn. Completed messages are mirrored; token-by-token streaming,
+message edits, and subsequent title, archive, or deletion changes are not
+mirrored. `/new` or `/switch` in a topic stops delivery from its original chat.
+Delivery progress is saved after each successful message chunk and survives
+restarts. A crash between Telegram accepting a chunk and saving that progress
+can replay the last chunk.
 
 Keep the session files and their `.topic-sync-*.json` companions together
 when backing up or moving the bot. A malformed sync file stops startup

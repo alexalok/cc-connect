@@ -1215,6 +1215,7 @@ app_secret = "your-feishu-app-secret"
 # topic_sync_chat_id = "123456789" # Optional: create DM topics for new external Codex chats.
 #                                 # Enable private topics in BotFather; this ID must be allowed above.
 #                                 # New chats only; the first-start cutoff and links survive restarts.
+#                                 # Mirrors user/assistant text; Codex backend = "app_server" is required.
 #                                 # 可选：为外部客户端新建的 Codex 会话创建私聊话题，需要在 BotFather 开启话题。
 # topic_sync_interval_seconds = 10 # Poll every 1–3600 seconds; default 10. / 轮询间隔，默认 10 秒。
 # proxy = "http://127.0.0.1:7890"  # Optional HTTP/SOCKS5 proxy for Telegram Bot API / 可选 HTTP/SOCKS5 代理
