@@ -741,7 +741,7 @@ Send voice messages — cc-connect transcribes them automatically.
 
 **Supported:** Feishu, WeChat Work, Telegram, LINE, Discord, Slack
 
-**Requirements:** OpenAI/Groq API key, `ffmpeg`
+**Requirements:** A speech provider credential and `ffmpeg`.
 
 ### Configure
 
@@ -760,6 +760,35 @@ api_key = "sk-xxx"
 # api_key = "gsk_xxx"
 # model = "whisper-large-v3-turbo"
 ```
+
+### Realtime transcription with a ChatGPT-backed gateway
+
+The `openai-realtime` provider can use an existing authenticated gateway such as
+OpenCodex that relays Realtime transcription using your ChatGPT/Codex account.
+Configure the gateway's credential and address; CC-Connect does not extract or
+refresh your ChatGPT login tokens.
+
+```toml
+[speech]
+enabled = true
+provider = "openai-realtime"
+language = "" # auto-detect, or a language code such as "en" or "ru"
+
+[speech.openai]
+api_key = "your-gateway-key"
+base_url = "http://127.0.0.1:10101/v1"
+model = "gpt-transcribe" # default for openai-realtime
+```
+
+The gateway must support `/v1/realtime?intent=transcription` WebSockets. A
+Responses-only proxy is insufficient. Subscription access depends on the
+gateway and account; omitting `base_url` uses the separately billed OpenAI API.
+Use HTTPS/WSS for remote gateways; HTTP/WS is accepted only on loopback.
+
+`ffmpeg` decodes each recording to 24 kHz mono PCM. The provider commits the
+whole recording once and waits for its final transcript, preserving pauses and
+the last sentence. Recordings are limited to ten minutes. This enables incoming
+voice messages; voice replies still use the separate `[tts]` configuration.
 
 ### Install ffmpeg
 

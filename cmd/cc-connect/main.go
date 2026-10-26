@@ -21,6 +21,7 @@ import (
 	"github.com/chenhg5/cc-connect/config"
 	"github.com/chenhg5/cc-connect/core"
 	"github.com/chenhg5/cc-connect/daemon"
+	"github.com/chenhg5/cc-connect/speech/realtime"
 	// Agent and platform imports are in separate plugin_*.go files
 	// controlled by build tags. See Makefile for selective compilation.
 )
@@ -742,6 +743,13 @@ func main() {
 				Language: cfg.Speech.Language,
 			}
 			switch cfg.Speech.Provider {
+			case "openai-realtime":
+				stt, err := realtime.New(cfg.Speech.OpenAI.APIKey, cfg.Speech.OpenAI.BaseURL, cfg.Speech.OpenAI.Model)
+				if err != nil {
+					slog.Warn("speech: realtime provider unavailable", "error", err)
+				} else {
+					speechCfg.STT = stt
+				}
 			case "groq":
 				apiKey := cfg.Speech.Groq.APIKey
 				model := cfg.Speech.Groq.Model
