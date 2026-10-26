@@ -3560,7 +3560,7 @@ func (e *Engine) handleVoiceMessage(p Platform, msg *Message) {
 	}
 
 	audio := msg.Audio
-	if NeedsConversion(audio.Format) && !HasFFmpeg() {
+	if speechNeedsConversion(e.speech.STT, audio.Format) && !HasFFmpeg() {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgVoiceNoFFmpeg))
 		return
 	}

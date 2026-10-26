@@ -21,6 +21,12 @@ type SpeechToText interface {
 	Transcribe(ctx context.Context, audio []byte, format string, lang string) (string, error)
 }
 
+// AudioFormatSupporter lets a transcriber accept the original recording rather
+// than first converting formats outside the default Whisper allowlist to MP3.
+type AudioFormatSupporter interface {
+	SupportsAudioFormat(format string) bool
+}
+
 // SpeechConfig holds STT configuration for the engine.
 type SpeechCfg struct {
 	Enabled  bool
@@ -518,7 +524,7 @@ func TranscribeAudio(ctx context.Context, stt SpeechToText, audio *AudioAttachme
 	data := audio.Data
 	format := strings.ToLower(audio.Format)
 
-	if NeedsConversion(format) {
+	if speechNeedsConversion(stt, format) {
 		slog.Debug("speech: converting audio", "from", format, "to", "mp3")
 		converted, err := ConvertAudioToMP3(ctx, data, format)
 		if err != nil {
@@ -530,4 +536,11 @@ func TranscribeAudio(ctx context.Context, stt SpeechToText, audio *AudioAttachme
 
 	slog.Debug("speech: transcribing", "format", format, "size", len(data))
 	return stt.Transcribe(ctx, data, format, lang)
+}
+
+func speechNeedsConversion(stt SpeechToText, format string) bool {
+	if supporter, ok := stt.(AudioFormatSupporter); ok && supporter.SupportsAudioFormat(strings.ToLower(format)) {
+		return false
+	}
+	return NeedsConversion(format)
 }
