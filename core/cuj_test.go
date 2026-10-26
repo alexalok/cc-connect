@@ -243,6 +243,72 @@ type cujDirectorySession struct {
 func (s *cujDirectorySession) CurrentSessionID() string { return s.id }
 func (s *cujDirectorySession) GetWorkDir() string       { return s.workDir }
 
+type cujTopicDiscoveryAgent struct {
+	cujDirectoryAgent
+}
+
+func (a *cujTopicDiscoveryAgent) DiscoverSessions(context.Context, time.Time) ([]AgentSessionInfo, error) {
+	return append([]AgentSessionInfo(nil), a.sessions...), nil
+}
+
+func (a *cujTopicDiscoveryAgent) GetSessionHistory(context.Context, string, int) ([]HistoryEntry, error) {
+	return []HistoryEntry{{Role: "user", Content: "Original desktop question", Timestamp: time.Now()}}, nil
+}
+
+func TestCUJ_B13_ExternalChatBecomesResumableTopic(t *testing.T) {
+	a := &cujTopicDiscoveryAgent{cujDirectoryAgent: cujDirectoryAgent{
+		defaultWorkDir: "/default", workDirs: map[string]string{"desktop-chat": "/desktop/project"},
+	}}
+	p := &topicSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, target: "owner"}
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	e, worker := newTopicSyncTest(t, a, p, path)
+	// User creates a chat in another client. The external boundary exposes it
+	// on the next discovery tick, and the user sees its new topic title.
+	a.sessions = []AgentSessionInfo{{ID: "desktop-chat", Summary: "Desktop project"}}
+	if err := worker.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if sent := strings.Join(p.getSent(), "\n"); !strings.Contains(sent, "topic: Desktop project") {
+		t.Fatalf("new topic was not visible: %s", sent)
+	}
+	key := p.keys[0]
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	send := func(engine *Engine, content string) {
+		p.clearSent()
+		engine.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", UserID: "owner", Content: content, ReplyCtx: key})
+	}
+	// User action 1: inspect the linked conversation.
+	send(e, "/current")
+	if !env.sentContains("desktop-chat") {
+		t.Fatalf("wrong chat: %v", p.getSent())
+	}
+	// User action 2: inspect native history before sending a bot message.
+	send(e, "/history")
+	if !env.sentContains("Original desktop question") {
+		t.Fatalf("native history missing: %v", p.getSent())
+	}
+	// User action 3: continue in the topic, using the native ID and directory.
+	send(e, "continue this work")
+	env.waitFor("native chat continuation", 3*time.Second, func() bool {
+		return env.sentContains("session=desktop-chat cwd=/desktop/project")
+	})
+	if err := e.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	e2, worker2 := newTopicSyncTest(t, a, p, path)
+	if err := worker2.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.keys) != 1 {
+		t.Fatalf("restart duplicated the topic: %v", p.keys)
+	}
+	// User action 4: after a restart, the topic still selects the same chat.
+	send(e2, "/current")
+	if !env.sentContains("desktop-chat") {
+		t.Fatalf("restart lost the link: %v", p.getSent())
+	}
+}
+
 // cujAgentSession is an AgentSession whose reply is controllable per-Send.
 // Tests can set reply (and optionally toolEvent) before each Send to drive
 // scenarios like "agent calls tool", "agent returns error", "agent succeeds".

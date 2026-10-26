@@ -601,11 +601,7 @@ func (a *Agent) mergedSessionEnvLocked() []string {
 }
 
 // Session discovery/history must use the same profile as new and resumed turns.
-// Keep the existing resolution when all-directory discovery is not enabled.
 func (a *Agent) sessionCodexHomeLocked() (string, error) {
-	if !a.listAllSessions {
-		return a.codexHome, nil
-	}
 	return absoluteCodexHome(a.codexHome, a.mergedSessionEnvLocked())
 }
 
