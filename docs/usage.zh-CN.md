@@ -620,6 +620,30 @@ api_key = "sk-xxx"
 # model = "whisper-large-v3-turbo"
 ```
 
+### 通过 ChatGPT 网关进行实时转写
+
+`openai-realtime` 可连接 OpenCodex 等已登录 ChatGPT/Codex 账户、支持实时转写的网关。
+请使用网关的凭据和地址；CC-Connect 不会读取或刷新 ChatGPT 登录令牌。
+
+```toml
+[speech]
+enabled = true
+provider = "openai-realtime"
+language = "" # 自动检测，也可填写 "zh"、"en" 或 "ru"
+
+[speech.openai]
+api_key = "your-gateway-key"
+base_url = "http://127.0.0.1:10101/v1"
+model = "gpt-transcribe"
+```
+
+网关必须支持 `/v1/realtime?intent=transcription` WebSocket；仅支持 Responses 的代理不够。
+订阅访问取决于网关和账户，省略 `base_url` 会使用独立计费的 OpenAI API。
+远程网关须使用 HTTPS/WSS，HTTP/WS 仅允许回环地址。
+
+需要 `ffmpeg` 将录音解码为 24 kHz 单声道 PCM；整段录音一次提交，并等待最终转写结果。
+录音最长十分钟。此功能用于接收语音消息；语音回复仍需单独配置 `[tts]`。
+
 ### 安装 ffmpeg
 
 ```bash

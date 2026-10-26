@@ -1494,6 +1494,47 @@ func TestCUJ_A3_ImageReachesAgent(t *testing.T) {
 // "voice not enabled" message (the actual STT branch is covered by
 // platform-specific tests).
 func TestCUJ_A4_VoiceMessageWithoutSTTSurfacesClearMessage(t *testing.T) {
+	t.Run("ConfiguredProviderKeepsVoiceAndTextInHistory", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		env := newCUJEnv(t)
+		t.Cleanup(func() { env.engine.Stop() })
+		const transcript = "remember the spoken number forty two"
+		env.engine.SetSpeechConfig(SpeechCfg{Enabled: true, STT: &originalAudioSTT{transcript: transcript}})
+
+		// Action 1: send voice in a format the provider decodes itself.
+		env.engine.ReceiveMessage(env.plat, &Message{
+			SessionKey: "test:voice", Platform: "test", UserID: "voice", MessageID: "voice-1", ReplyCtx: "ctx-voice",
+			Audio: &AudioAttachment{Format: "ogg", Data: []byte("voice recording")},
+		})
+		env.waitFor("voice transcript and agent reply", 3*time.Second, func() bool {
+			return env.sentContains(transcript) && env.sentContains("ok")
+		})
+
+		// Action 2: continue the same conversation with typed text.
+		env.userSends("voice", "remember the typed number seven")
+		env.waitFor("second reply", 3*time.Second, func() bool {
+			n := 0
+			for _, text := range env.plat.getSent() {
+				if text == "ok" {
+					n++
+				}
+			}
+			return n >= 2
+		})
+
+		// Action 3: inspect history; both user inputs must be visible.
+		before := len(env.plat.getSent())
+		env.userSends("voice", "/history")
+		env.waitFor("voice and text in history", 3*time.Second, func() bool {
+			for _, text := range env.plat.getSent()[before:] {
+				if strings.Contains(text, transcript) && strings.Contains(text, "remember the typed number seven") {
+					return true
+				}
+			}
+			return false
+		})
+	})
+
 	plat := &stubPlatformEngine{n: "test"}
 	agent := &cujAgent{}
 	dir := t.TempDir()

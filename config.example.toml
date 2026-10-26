@@ -521,6 +521,22 @@ level = "info" # debug, info, warn, error
 # api_key = "gsk_xxx"
 # model = "whisper-large-v3-turbo"
 
+# Realtime transcription through an OpenAI-compatible gateway (for example,
+# a local gateway using an existing ChatGPT/Codex subscription).
+# 实时语音转写：可通过兼容网关使用已有的 ChatGPT/Codex 订阅。
+# Requires ffmpeg. Reuse [speech.openai] for the gateway's URL and credential.
+# 需要 ffmpeg；网关地址与凭据使用 [speech.openai] 配置。
+# [speech]
+# enabled = true
+# provider = "openai-realtime"
+# [speech.openai]
+# api_key = "your-gateway-key"
+# base_url = "http://127.0.0.1:10101/v1"
+# model = "gpt-transcribe"
+# The default api.openai.com endpoint requires separately billed API access;
+# ChatGPT subscription access depends on the configured gateway.
+# 默认 api.openai.com 端点需要独立计费的 API 访问；订阅支持取决于网关。
+
 # =============================================================================
 # Text-to-Speech (Voice Reply) / 文字转语音（语音回复）
 # =============================================================================
