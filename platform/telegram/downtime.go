@@ -77,13 +77,23 @@ type downtimeSummary struct {
 	attempted bool
 }
 
+// Telegram retains pending updates for at most 24 hours and may choose a new
+// random update ID after a week of inactivity. Expiring old cursors before
+// acknowledgement avoids swallowing unseen updates after that reset.
+const telegramUpdateRetention = 24 * time.Hour
+
+type updateCursor struct {
+	nextOffset int64
+	updatedAt  time.Time
+}
+
 // The cursor, cutoff and summaries survive connection retries in memory. A
 // failed request may already have acknowledged the preceding page on Telegram;
 // resetting the summaries on retry would lose those counts.
 type downtimeDrain struct {
 	mu           sync.Mutex
 	cutoff       time.Time
-	nextOffset   int64
+	cursor       updateCursor
 	lastUpdateID int64
 	complete     atomic.Bool
 	groups       map[downtimeDestination]*downtimeSummary
@@ -111,7 +121,10 @@ func (p *Platform) drainDowntime(ctx context.Context, source pendingUpdateSource
 	if drain == nil || drain.complete.Load() {
 		// Telegram timestamps have second precision. Messages in the current
 		// second are live, avoiding accidental discard at the startup boundary.
-		drain = &downtimeDrain{cutoff: time.Now().UTC().Truncate(time.Second), groups: make(map[downtimeDestination]*downtimeSummary)}
+		drain = &downtimeDrain{
+			cutoff: time.Now().UTC().Truncate(time.Second), cursor: p.processedCursor,
+			groups: make(map[downtimeDestination]*downtimeSummary),
+		}
 		p.downtime = drain
 	}
 	p.mu.Unlock()
@@ -121,7 +134,7 @@ func (p *Platform) drainDowntime(ctx context.Context, source pendingUpdateSource
 		return err
 	}
 	drain.complete.Store(true)
-	drain.lastUpdateID = drain.nextOffset - 1
+	drain.lastUpdateID = drain.cursor.nextOffset - 1
 	source.setPollingOffset(drain.lastUpdateID)
 	for _, dest := range sortedDowntimeDestinations(drain.groups) {
 		p.sendDowntimeNotice(ctx, bot, dest, drain.groups[dest])
@@ -130,35 +143,41 @@ func (p *Platform) drainDowntime(ctx context.Context, source pendingUpdateSource
 }
 
 func (p *Platform) collectDowntime(ctx context.Context, source pendingUpdateSource, drain *downtimeDrain) error {
+	if time.Since(drain.cursor.updatedAt) >= telegramUpdateRetention {
+		// Keep an incomplete drain's counts and cutoff, but its expired
+		// acknowledgement prefix cannot still be waiting on Telegram.
+		drain.cursor = updateCursor{}
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		updates, err := source.pendingUpdates(ctx, drain.nextOffset)
+		updates, err := source.pendingUpdates(ctx, drain.cursor.nextOffset)
 		if err != nil {
 			return err
 		}
-		// Requesting nextOffset acknowledges exactly the prefix already counted.
+		// Acknowledge only the prefix already counted or processed before a
+		// reconnect; completed live inputs must not appear in skipped notices.
 		// Stop before a live update, leaving it on Telegram for normal polling.
 		if len(updates) == 0 {
 			return nil
 		}
 		advanced := false
 		for _, update := range updates {
-			if update == nil || update.ID < drain.nextOffset {
+			if update == nil || update.ID < drain.cursor.nextOffset {
 				continue
 			}
 			if msg := update.Message; msg != nil && int64(msg.Date) >= drain.cutoff.Unix() {
 				if advanced {
 					// Confirm only the skipped prefix. The returned live updates
 					// remain unacknowledged and will be read by the poller.
-					_, err := source.pendingUpdates(ctx, drain.nextOffset)
+					_, err := source.pendingUpdates(ctx, drain.cursor.nextOffset)
 					return err
 				}
 				return nil
 			}
 			p.countDowntimeMessage(drain, update.Message)
-			drain.nextOffset = update.ID + 1
+			drain.cursor = updateCursor{nextOffset: update.ID + 1, updatedAt: time.Now()}
 			advanced = true
 		}
 		if !advanced {

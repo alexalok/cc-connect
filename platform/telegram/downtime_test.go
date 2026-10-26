@@ -201,6 +201,92 @@ func TestDrainDowntime_RetryRetainsAcknowledgedCountsAndCutoff(t *testing.T) {
 	}
 }
 
+func TestDrainDowntime_CompletedCursorIncludesNonPromptUpdates(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	unauthorized := downtimeMessage(100, int(now.Unix()), 10, 0)
+	unauthorized.Message.From.ID = 8
+	for name, processed := range map[string]*models.Update{
+		"service":      {ID: 100, Message: topicCreated(100, int(now.Unix()), 55)},
+		"callback":     {ID: 100, CallbackQuery: &models.CallbackQuery{ID: "consumed"}},
+		"unauthorized": unauthorized,
+		"unsupported":  {ID: 100},
+	} {
+		t.Run(name, func(t *testing.T) {
+			missed := downtimeMessage(101, int(now.Unix())-1, 10, 0)
+			api := &downtimeAPI{updates: []*models.Update{processed, missed}, pageSize: 100}
+			sender := newDowntimeNoticeBot()
+			source := api.bot(t, sender)
+			p := &Platform{allowFrom: "7", bot: source, handler: func(core.Platform, *core.Message) { t.Error("non-prompt update dispatched") }}
+			p.processUpdate(context.Background(), processed)
+			if err := p.drainDowntime(context.Background(), source, source); err != nil {
+				t.Fatal(err)
+			}
+			if len(api.offsets) == 0 || api.offsets[0] != 101 {
+				t.Fatalf("recovery did not acknowledge the completed prefix: %v", api.offsets)
+			}
+			if len(sender.sends) != 1 || !strings.Contains(sender.sends[0].Text, "skipped 1 messages") {
+				t.Fatalf("completed update inflated downtime notice: %+v", sender.sends)
+			}
+		})
+	}
+}
+
+func TestDrainDowntime_CompletedCursorUsesLatestIDAfterReset(t *testing.T) {
+	sender := newDowntimeNoticeBot()
+	missed := downtimeMessage(11, int(time.Now().Unix())-1, 10, 0)
+	api := &downtimeAPI{updates: []*models.Update{missed}, pageSize: 100}
+	source := api.bot(t, sender)
+	p := &Platform{bot: source}
+	p.processUpdate(context.Background(), &models.Update{ID: 1000})
+	p.processUpdate(context.Background(), &models.Update{ID: 10})
+	if err := p.drainDowntime(context.Background(), source, source); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.offsets) == 0 || api.offsets[0] != 11 || len(sender.sends) != 1 {
+		t.Fatalf("recovery reused a pre-reset high-water mark: offsets=%v notices=%+v", api.offsets, sender.sends)
+	}
+}
+
+func TestDrainDowntime_ExpiresCursorsBeforeAcknowledgingNewUpdateIDs(t *testing.T) {
+	for _, incomplete := range []bool{false, true} {
+		t.Run(fmt.Sprintf("incomplete=%v", incomplete), func(t *testing.T) {
+			now := time.Now().UTC().Truncate(time.Second)
+			live := downtimeMessage(10, int(now.Unix())+1, 10, 0)
+			api := &downtimeAPI{updates: []*models.Update{live}, pageSize: 100}
+			sender := newDowntimeNoticeBot()
+			source := api.bot(t, sender)
+			var received int
+			p := &Platform{bot: source, handler: func(core.Platform, *core.Message) { received++ }}
+			stale := updateCursor{nextOffset: 1001, updatedAt: now.Add(-telegramUpdateRetention)}
+			if incomplete {
+				p.downtime = &downtimeDrain{
+					cutoff: now.Add(-8 * 24 * time.Hour), cursor: stale,
+					groups: map[downtimeDestination]*downtimeSummary{{chatID: 10}: {count: 2, earliest: now.Add(-9 * 24 * time.Hour)}},
+				}
+			} else {
+				p.processedCursor = stale
+			}
+			if err := p.drainDowntime(context.Background(), source, source); err != nil {
+				t.Fatal(err)
+			}
+			if len(api.offsets) != 1 || api.offsets[0] != 0 || api.confirmed != 0 {
+				t.Fatalf("stale cursor acknowledged unseen lower IDs: %v confirmed=%d", api.offsets, api.confirmed)
+			}
+			p.processUpdate(context.Background(), live)
+			if received != 1 {
+				t.Fatal("live update after cursor expiry was not processed")
+			}
+			if incomplete {
+				if len(sender.sends) != 1 || !strings.Contains(sender.sends[0].Text, "skipped 2 messages") || !p.downtime.cutoff.Equal(now.Add(-8*24*time.Hour)) {
+					t.Fatalf("cursor expiry lost in-progress summary or cutoff: %+v", sender.sends)
+				}
+			} else if len(sender.sends) != 0 {
+				t.Fatalf("live update was counted as downtime: %+v", sender.sends)
+			}
+		})
+	}
+}
+
 func TestDiscardLateDowntimeUpdate_PreservesLiveTrafficAfterUpdateIDReset(t *testing.T) {
 	cutoff := time.Now().UTC().Truncate(time.Second)
 	drain := &downtimeDrain{cutoff: cutoff, lastUpdateID: 1000, groups: make(map[downtimeDestination]*downtimeSummary)}
