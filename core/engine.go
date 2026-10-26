@@ -443,6 +443,9 @@ type Engine struct {
 	// processInteractiveEvents.
 	autoCompressAllowHeuristic bool
 	resetOnIdle                time.Duration
+	// Zero value preserves the historical fallback to a fresh agent session.
+	// Atomic because configuration reloads may happen during a turn.
+	disableResumeFallback atomic.Bool
 
 	// Reply footer composition flags. The footer renders up to two lines:
 	//   line 1 — model · [effort ·] out/in/cw/cr · ctx%   (gated by showContextIndicator)
@@ -487,13 +490,14 @@ type Engine struct {
 
 	// Teardown tracking. A session's state is removed from interactiveStates
 	// as soon as /stop is issued, but its OS process can live on for up to
-	// closeTimeout while it drains stdin and runs Stop hooks. Without the two
-	// maps below, a message arriving in that window spawns a second process
+	// closeTimeout while it drains stdin and runs Stop hooks. Without this
+	// tracking, a message arriving in that window spawns a second process
 	// that resumes the *same* agent session ID — two live agents then share
 	// one conversation lineage, each acting on it independently.
-	closingMu       sync.Mutex
-	closingSessions map[string]chan struct{} // sessionKey → closed when teardown finishes
-	unsafeResume    map[string]bool          // sessionKey → next spawn must start fresh, not resume
+	closingMu           sync.Mutex
+	closingSessions     map[string]chan struct{}       // sessionKey → closed when teardown finishes
+	unsafeResume        map[string]bool                // sessionKey → unsafe teardown without a known native ID
+	unsafeAgentSessions map[unsafeAgentSessionKey]bool // native sessions whose teardown could not be confirmed
 
 	platformLifecycleMu sync.Mutex
 	platformReady       map[Platform]bool
@@ -553,6 +557,8 @@ type queuedMessage struct {
 // interactiveState tracks a running interactive agent session and its permission state.
 type interactiveState struct {
 	agentSession AgentSession
+	// startFailureMsg explains a failed start without exposing provider errors.
+	startFailureMsg MsgKey
 	// busySession is the core.Session whose busy lock guards the in-flight
 	// turn. Set by getOrCreateInteractiveStateWith so /stop can release the
 	// lock after tearing the turn down (#1830).
@@ -3412,6 +3418,12 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 	e.interactiveMu.Unlock()
 	defer state.mu.Unlock()
 
+	if state.startFailureMsg == MsgSessionResumePreserved || state.startFailureMsg == MsgSessionResumeBlocked {
+		// A failed strict resume is no longer starting up: do not accept
+		// messages into a queue with no agent to drain it.
+		e.reply(p, msg.ReplyCtx, e.i18n.T(state.startFailureMsg))
+		return true
+	}
 	// Allow queueing when agentSession is nil (session is starting up,
 	// issue #565). Only reject if the session was established and died.
 	if state.agentSession != nil && !state.agentSession.Alive() {
@@ -4064,7 +4076,14 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	defer stopRecallMonitor()
 
 	if state.agentSession == nil {
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgFailedToStartAgentSession))
+		failureMsg := state.startFailureMsg
+		if failureMsg == "" {
+			failureMsg = MsgFailedToStartAgentSession
+		}
+		e.reply(p, msg.ReplyCtx, e.i18n.T(failureMsg))
+		if failureMsg == MsgSessionResumePreserved || failureMsg == MsgSessionResumeBlocked {
+			e.rejectQueuedMessagesAfterResumeFailure(state)
+		}
 		return
 	}
 	e.cancelAgentSessionIdleClose(state)
@@ -4362,7 +4381,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		state.markStopped()
 		// Close synchronously to prevent race condition where old agent
 		// continues outputting while new agent starts (issue #327).
-		e.closeAgentSessionWithTimeout(sessionKey, state.agentSession, state.platform, state.replyCtx)
+		e.closeAgentSessionWithTimeout(sessionKey, state.agentSession, state.platform, state.replyCtx, state.agent)
 		delete(e.interactiveStates, sessionKey)
 		ok = false // prevent reading stale settings below
 	}
@@ -4432,6 +4451,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	// is unbound, force a fresh start instead of attaching to whichever CLI
 	// conversation happens to be "latest" in this workspace.
 	startSessionID := session.GetAgentSessionID()
+	fallbackToNew := !e.disableResumeFallback.Load()
 	// Cross-project session leakage guard (issue #599): if a session ID was
 	// inherited from a different project's workspace (e.g. another
 	// cc-connect project that happens to share a Session row), the agent
@@ -4439,6 +4459,11 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	// resume a conversation that has nothing to do with this project.
 	if startSessionID != "" {
 		if validator, ok := agent.(SessionIDValidator); ok && !validator.ValidateSessionID(e.ctx, startSessionID) {
+			if !fallbackToNew {
+				slog.Warn("saved session failed validation; preserving binding without starting an agent",
+					"session_key", sessionKey, "agent_session_id", startSessionID)
+				return e.failedInteractiveState(sessionKey, p, replyCtx, agent, session, MsgSessionResumePreserved)
+			}
 			slog.Warn("session ID does not belong to this project, clearing it",
 				"session_key", sessionKey, "invalid_session_id", startSessionID)
 			session.SetAgentSessionID("", agent.Name())
@@ -4450,13 +4475,26 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	// (close reported a kill failure, timed out, or we gave up waiting for it).
 	// Starting fresh loses this conversation's history, but resuming would put
 	// two live agents on one transcript — both replying, both calling tools.
-	if startSessionID != "" && (!closeSettled || e.consumeUnsafeResume(sessionKey)) {
+	if startSessionID != "" && (!closeSettled || e.consumeUnsafeResume(sessionKey) || e.isUnsafeAgentSession(agent, startSessionID)) {
+		// Tie the guard to the native conversation, not the chat's current
+		// binding. /new and /switch must not make the unsafe ID resumable.
+		e.markUnsafeAgentSession(agent, startSessionID)
+		if !fallbackToNew {
+			slog.Warn("previous agent process not confirmed dead; preserving binding without starting an agent",
+				"session_key", sessionKey, "agent_session_id", startSessionID)
+			return e.failedInteractiveState(sessionKey, p, replyCtx, agent, session, MsgSessionResumeBlocked)
+		}
 		slog.Warn("previous agent process not confirmed dead, starting a fresh session instead of resuming",
 			"session_key", sessionKey, "abandoned_session_id", startSessionID)
 		session.SetAgentSessionID("", agent.Name())
 		sessions.Save()
 		startSessionID = ""
 		e.send(p, replyCtx, e.i18n.T(MsgSessionResumeUnsafe))
+	}
+	if startSessionID == "" && !fallbackToNew {
+		// An explicit /new has abandoned the old binding. Do not let its
+		// teardown guard block a later resume of the new conversation.
+		e.consumeUnsafeResume(sessionKey)
 	}
 
 	isResume := startSessionID != ""
@@ -4465,7 +4503,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	startElapsed := time.Since(startAt)
 	if err != nil {
 		// If resume/continue failed, try a fresh session as fallback.
-		if startSessionID != "" {
+		if startSessionID != "" && fallbackToNew {
 			slog.Error("session resume failed, falling back to fresh session",
 				"session_key", sessionKey, "failed_session_id", startSessionID,
 				"error", err, "elapsed", startElapsed)
@@ -4489,11 +4527,11 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 				Platform:   p.Name(),
 				Error:      fmt.Sprintf("failed to start session: %v", err),
 			})
-			newState := &interactiveState{platform: p, replyCtx: replyCtx, agent: agent, eventsNeedResync: true, busySession: session}
-			adoptPendingFromPlaceholder(e.interactiveStates[sessionKey], newState)
-			state = newState
-			e.interactiveStates[sessionKey] = state
-			return state
+			failureMsg := MsgFailedToStartAgentSession
+			if startSessionID != "" && !fallbackToNew {
+				failureMsg = MsgSessionResumePreserved
+			}
+			return e.failedInteractiveState(sessionKey, p, replyCtx, agent, session, failureMsg)
 		}
 	}
 	if startElapsed >= slowAgentStart {
@@ -4575,12 +4613,14 @@ func (e *Engine) cleanupInteractiveState(sessionKey string, expected ...*interac
 	var agentSession AgentSession
 	var closePlatform Platform
 	var closeReplyCtx any
+	var closeOwner Agent
 	if ok && state != nil {
 		state.mu.Lock()
 		agentSession = state.agentSession
 		state.agentSession = nil
 		closePlatform = state.platform
 		closeReplyCtx = state.replyCtx
+		closeOwner = state.agent
 		if state.agentSessionIdleCancel != nil {
 			state.agentSessionIdleCancel()
 			state.agentSessionIdleCancel = nil
@@ -4614,7 +4654,7 @@ func (e *Engine) cleanupInteractiveState(sessionKey string, expected ...*interac
 	// an empty map and reports "No execution in progress" while
 	// the agent session Close() is still blocking (up to 130s).
 	if agentSession != nil {
-		e.closeAgentSessionWithTimeout(sessionKey, agentSession, closePlatform, closeReplyCtx)
+		e.closeAgentSessionWithTimeout(sessionKey, agentSession, closePlatform, closeReplyCtx, closeOwner)
 	}
 
 	// Now delete the state from the map after the session is closed.
@@ -4713,6 +4753,7 @@ func (e *Engine) cleanupInteractiveStateForIdleToken(sessionKey string, expected
 	state.agentSessionIdleToken = 0
 	closePlatform := state.platform
 	closeReplyCtx := state.replyCtx
+	closeOwner := state.agent
 	state.mu.Unlock()
 	e.interactiveMu.Unlock()
 
@@ -4730,7 +4771,7 @@ func (e *Engine) cleanupInteractiveStateForIdleToken(sessionKey string, expected
 	}
 	e.notifyDroppedQueuedMessages(state, fmt.Errorf("session reset"))
 
-	e.closeAgentSessionWithTimeout(sessionKey, agentSession, closePlatform, closeReplyCtx)
+	e.closeAgentSessionWithTimeout(sessionKey, agentSession, closePlatform, closeReplyCtx, closeOwner)
 
 	e.interactiveMu.Lock()
 	if currentState, currentOk := e.interactiveStates[sessionKey]; currentOk && currentState == expected {
@@ -4841,7 +4882,7 @@ func (e *Engine) consumeUnsafeResume(sessionKey string) bool {
 	return true
 }
 
-func (e *Engine) closeAgentSessionAsync(sessionKey string, agentSession AgentSession, platform Platform, replyCtx any) {
+func (e *Engine) closeAgentSessionAsync(sessionKey string, agentSession AgentSession, platform Platform, replyCtx any, owner Agent) {
 	if agentSession == nil {
 		return
 	}
@@ -4850,7 +4891,7 @@ func (e *Engine) closeAgentSessionAsync(sessionKey string, agentSession AgentSes
 	finish := e.beginSessionClose(sessionKey)
 	go func() {
 		defer finish()
-		e.closeAgentSession(sessionKey, agentSession, platform, replyCtx)
+		e.closeAgentSession(sessionKey, agentSession, platform, replyCtx, owner)
 	}()
 }
 
@@ -4861,24 +4902,34 @@ func (e *Engine) closeAgentSessionAsync(sessionKey string, agentSession AgentSes
 // reports a kill failure, or because it does not return within the budget
 // at all. In both cases the process may still be running with the session's
 // original credentials, so silence here is worse than a noisy warning.
-func (e *Engine) closeAgentSessionWithTimeout(sessionKey string, agentSession AgentSession, platform Platform, replyCtx any) {
+func (e *Engine) closeAgentSessionWithTimeout(sessionKey string, agentSession AgentSession, platform Platform, replyCtx any, owner Agent) {
 	if agentSession == nil {
 		return
 	}
 	finish := e.beginSessionClose(sessionKey)
 	defer finish()
-	e.closeAgentSession(sessionKey, agentSession, platform, replyCtx)
+	e.closeAgentSession(sessionKey, agentSession, platform, replyCtx, owner)
 }
 
 // closeAgentSession performs the teardown itself. Callers must have registered
 // the in-flight close (beginSessionClose) first.
-func (e *Engine) closeAgentSession(sessionKey string, agentSession AgentSession, platform Platform, replyCtx any) {
+func (e *Engine) closeAgentSession(sessionKey string, agentSession AgentSession, platform Platform, replyCtx any, owner Agent) {
 	if agentSession == nil {
 		return
 	}
 
 	slog.Debug("cleanupInteractiveState: closing agent session", "session", sessionKey)
 	closeStart := time.Now()
+	// Close may clear the adapter's ID. Capture it while the original process
+	// is still attached, before /new can discard the cc-connect binding.
+	nativeID := agentSession.CurrentSessionID()
+	markUnsafe := func() {
+		if nativeID != "" {
+			e.markUnsafeAgentSession(owner, nativeID)
+		} else {
+			e.markUnsafeResume(sessionKey)
+		}
+	}
 
 	done := make(chan struct{})
 	var closeErr error
@@ -4894,7 +4945,7 @@ func (e *Engine) closeAgentSession(sessionKey string, agentSession AgentSession,
 				"session", sessionKey, "error", closeErr)
 			// The old process may still hold this conversation open — the
 			// next turn must not resume into it.
-			e.markUnsafeResume(sessionKey)
+			markUnsafe()
 			e.notifySessionCloseFailure(sessionKey, platform, replyCtx, closeErr)
 			return
 		}
@@ -4904,7 +4955,7 @@ func (e *Engine) closeAgentSession(sessionKey string, agentSession AgentSession,
 	case <-time.After(closeTimeout):
 		slog.Error("agent session close timed out, abandoning",
 			"timeout", closeTimeout, "session", sessionKey)
-		e.markUnsafeResume(sessionKey)
+		markUnsafe()
 		e.notifySessionCloseFailure(sessionKey, platform, replyCtx,
 			fmt.Errorf("did not respond within %s", closeTimeout))
 	}
@@ -10918,6 +10969,7 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 	agentSession := state.agentSession
 	closePlatform := state.platform
 	closeReplyCtx := state.replyCtx
+	closeOwner := state.agent
 	state.mu.Unlock()
 
 	// If the agent session supports graceful turn cancellation (e.g. ACP),
@@ -10984,7 +11036,7 @@ normalCleanup:
 		state.pendingMessages = nil
 		state.mu.Unlock()
 	}
-	e.closeAgentSessionAsync(sessionKey, agentSession, closePlatform, closeReplyCtx)
+	e.closeAgentSessionAsync(sessionKey, agentSession, closePlatform, closeReplyCtx, closeOwner)
 
 	// The stopped turn can never run its own Unlock — release its busy lock
 	// so the next message starts a fresh turn instead of queueing behind a
@@ -16630,11 +16682,22 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 	// Use the engine context (not the relay timeout context) so that the
 	// agent process is not killed when the relay deadline fires. The relay
 	// timeout only controls how long we *wait* for the response.
-	agentSession, err := agent.StartSession(e.ctx, session.GetAgentSessionID())
+	startSessionID := session.GetAgentSessionID()
+	if startSessionID != "" && e.isUnsafeAgentSession(agent, startSessionID) {
+		if e.disableResumeFallback.Load() {
+			return "", fmt.Errorf("resume relay session: previous process could not be confirmed stopped; saved session preserved")
+		}
+		slog.Warn("relay: previous agent process not confirmed dead, starting a fresh session",
+			"relay_key", relaySessionKey, "abandoned_session_id", startSessionID)
+		session.SetAgentSessionID("", agent.Name())
+		sessions.Save()
+		startSessionID = ""
+	}
+	agentSession, err := agent.StartSession(e.ctx, startSessionID)
 	if err != nil {
 		// Resume failed — fall back to a fresh session so the relay is not
 		// permanently broken by a corrupted/stale session ID.
-		if session.GetAgentSessionID() != "" {
+		if session.GetAgentSessionID() != "" && !e.disableResumeFallback.Load() {
 			slog.Warn("relay: session resume failed, trying fresh session",
 				"relay_key", relaySessionKey, "error", err)
 			session.SetAgentSessionID("", agent.Name())

@@ -363,6 +363,8 @@ type MessageHandler func(p Platform, msg *Message)
 type Agent interface {
 	Name() string
 	// StartSession creates or resumes an interactive session with a persistent process.
+	// If resuming a saved session fails, return an error rather than silently
+	// creating a replacement; the engine applies the configured fallback policy.
 	StartSession(ctx context.Context, sessionID string) (AgentSession, error)
 	// ListSessions returns sessions known to the agent backend.
 	ListSessions(ctx context.Context) ([]AgentSessionInfo, error)

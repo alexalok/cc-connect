@@ -204,6 +204,8 @@ const (
 	MsgExecutionStopped          MsgKey = "execution_stopped"
 	MsgSessionCloseFailed        MsgKey = "session_close_failed"
 	MsgSessionResumeUnsafe       MsgKey = "session_resume_unsafe"
+	MsgSessionResumePreserved    MsgKey = "session_resume_preserved"
+	MsgSessionResumeBlocked      MsgKey = "session_resume_blocked"
 	MsgSessionCancelled          MsgKey = "session_cancelled"
 	MsgNoExecution               MsgKey = "no_execution"
 	MsgPreviousProcessing        MsgKey = "previous_processing"
@@ -789,6 +791,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "⚠️ 上一個行程未能確認已停止，因此沒有續接原會話，已為你開啟全新會話（先前上下文未帶入）。這是為了避免兩個智能體同時操作同一個會話。",
 		LangJapanese:           "⚠️ 前のプロセスの停止を確認できなかったため、会話を再開せず新しいセッションを開始しました（以前の文脈は引き継がれません）。同じ会話を2つのエージェントが操作するのを防ぐためです。",
 		LangSpanish:            "⚠️ No se pudo confirmar que el proceso anterior se detuviera, así que no se reanudó esta conversación: se inició una sesión nueva (sin el contexto anterior). Así se evita que dos agentes actúen sobre la misma conversación.",
+	},
+	MsgSessionResumePreserved: {
+		LangEnglish:            "❌ Could not resume this conversation. Its saved session was preserved and your message was not sent to the agent. Retry after resolving the problem, or use /new to start a new conversation.",
+		LangChinese:            "❌ 无法恢复此会话。已保留原会话，消息未发送给智能体。请解决问题后重试，或使用 /new 开始新会话。",
+		LangTraditionalChinese: "❌ 無法恢復此會話。已保留原會話，訊息未傳送給智能體。請解決問題後重試，或使用 /new 開始新會話。",
+		LangJapanese:           "❌ この会話を再開できませんでした。保存済みのセッションは維持され、メッセージはエージェントに送信されていません。問題を解決して再試行するか、/new で新しい会話を開始してください。",
+		LangSpanish:            "❌ No se pudo reanudar esta conversación. Se conservó la sesión guardada y tu mensaje no se envió al agente. Resuelve el problema y vuelve a intentarlo, o usa /new para iniciar otra conversación.",
+	},
+	MsgSessionResumeBlocked: {
+		LangEnglish:            "❌ Could not confirm that the previous process stopped. The saved conversation was preserved and no new session was started. Stop the old process before restarting cc-connect, or use /new for a separate conversation.",
+		LangChinese:            "❌ 无法确认上一个进程已停止。已保留原会话，未启动新会话。请先停止旧进程再重启 cc-connect，或使用 /new 开始独立会话。",
+		LangTraditionalChinese: "❌ 無法確認上一個行程已停止。已保留原會話，未啟動新會話。請先停止舊行程再重新啟動 cc-connect，或使用 /new 開始獨立會話。",
+		LangJapanese:           "❌ 前のプロセスの停止を確認できませんでした。保存済みの会話は維持され、新しいセッションは開始されていません。古いプロセスを停止してから cc-connect を再起動するか、/new で別の会話を開始してください。",
+		LangSpanish:            "❌ No se pudo confirmar que el proceso anterior se detuviera. Se conservó la conversación y no se inició otra sesión. Detén el proceso anterior antes de reiniciar cc-connect, o usa /new para una conversación independiente.",
 	},
 	MsgSessionCancelled: {
 		LangEnglish:            "Session cancelled. Ready for new instructions.",

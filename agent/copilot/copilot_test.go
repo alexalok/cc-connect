@@ -4,11 +4,51 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 )
+
+func TestStartSession_ResumeFailureDoesNotCreateSession(t *testing.T) {
+	workDir := t.TempDir()
+	requestLog := filepath.Join(workDir, "requests.log")
+	a := &Agent{
+		cmd:     os.Args[0],
+		workDir: workDir,
+		configEnv: []string{
+			"CC_MOCK_COPILOT_MODE=resume_failure",
+			"CC_MOCK_COPILOT_REQUEST_LOG=" + requestLog,
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := a.StartSession(ctx, "saved-session")
+	if err == nil && session != nil {
+		_ = session.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "saved session unavailable") {
+		t.Fatalf("StartSession error = %v, want saved-session resume failure", err)
+	}
+	requests, err := os.ReadFile(requestLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(requests); got != "ping\nsession.resume\n" {
+		t.Fatalf("resume requests = %q; must not create a replacement", got)
+	}
+
+	// The engine can still explicitly request its default fresh fallback.
+	session, err = a.StartSession(ctx, "")
+	if err != nil {
+		t.Fatalf("explicit fresh StartSession: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	if got := session.CurrentSessionID(); got != "fresh-session" {
+		t.Fatalf("fresh session ID = %q, want fresh-session", got)
+	}
+}
 
 func TestNew_MissingBinary(t *testing.T) {
 	_, err := New(map[string]any{

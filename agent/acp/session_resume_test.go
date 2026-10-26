@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -80,7 +81,13 @@ func startACPScriptedServer(t *testing.T, results []any) (*transport, *acpScript
 			}
 		}
 	}()
-	return tr, srv, cancel
+	return tr, srv, func() {
+		cancel()
+		_ = clientIn.Close()
+		_ = serverOut.Close()
+		_ = serverIn.Close()
+		_ = clientOut.Close()
+	}
 }
 
 // initializeResult builds an `initialize` payload advertising exactly the
@@ -170,29 +177,30 @@ func TestHandshake_ResumesViaSessionLoadWhenOnlyLoadAdvertised(t *testing.T) {
 	}
 }
 
-// A failed resume must fall back to session/new so the session still
-// becomes usable.
-func TestHandshake_FallsBackToNewWhenResumeFails(t *testing.T) {
-	tr, srv, cancel := startACPScriptedServer(t, []any{
-		initializeResult(false, true, false),
-		nil, // session/resume -> JSON-RPC error
-		map[string]any{"sessionId": "sess-fresh"},
-	})
-	defer cancel()
+// The engine owns resume_fallback_to_new; adapters must return resume
+// failures without creating a replacement conversation themselves.
+func TestHandshake_ResumeFailureDoesNotCreateSession(t *testing.T) {
+	for _, method := range []string{"session/resume", "session/load"} {
+		t.Run(method, func(t *testing.T) {
+			tr, srv, cancel := startACPScriptedServer(t, []any{
+				initializeResult(method == "session/load", method == "session/resume", false),
+				nil, // resume -> JSON-RPC error
+				map[string]any{"sessionId": "sess-fresh"},
+			})
+			defer cancel()
 
-	s := newHandshakeTestSession(tr)
-	if err := s.handshake("sess-old", ""); err != nil {
-		t.Fatalf("handshake: %v", err)
-	}
-
-	if !srv.calledMethod("session/resume") {
-		t.Fatalf("expected session/resume to be attempted, got %v", srv.called())
-	}
-	if !srv.calledMethod("session/new") {
-		t.Fatalf("expected fallback to session/new, got %v", srv.called())
-	}
-	if got := s.currentACPSessionID(); got != "sess-fresh" {
-		t.Fatalf("agent session id = %q, want %q", got, "sess-fresh")
+			s := newHandshakeTestSession(tr)
+			s.setACPSessionID("sess-old")
+			if err := s.handshake("sess-old", ""); err == nil || !strings.Contains(err.Error(), method) {
+				t.Fatalf("handshake error = %v, want %s failure", err, method)
+			}
+			if !srv.calledMethod(method) || srv.calledMethod("session/new") {
+				t.Fatalf("resume failure must not create a replacement, got %v", srv.called())
+			}
+			if got := s.currentACPSessionID(); got != "sess-old" {
+				t.Fatalf("agent session id = %q, want preserved %q", got, "sess-old")
+			}
+		})
 	}
 }
 
@@ -217,8 +225,8 @@ func TestHandshake_NoResumeWhenNoSessionID(t *testing.T) {
 	}
 }
 
-// A server advertising neither capability is started fresh.
-func TestHandshake_NewWhenNoCapabilityAdvertised(t *testing.T) {
+// A missing resume capability is also a failure for the engine to handle.
+func TestHandshake_UnsupportedResumeDoesNotCreateSession(t *testing.T) {
 	tr, srv, cancel := startACPScriptedServer(t, []any{
 		initializeResult(false, false, false),
 		map[string]any{"sessionId": "sess-fresh"},
@@ -226,15 +234,19 @@ func TestHandshake_NewWhenNoCapabilityAdvertised(t *testing.T) {
 	defer cancel()
 
 	s := newHandshakeTestSession(tr)
-	if err := s.handshake("sess-old", ""); err != nil {
-		t.Fatalf("handshake: %v", err)
+	s.setACPSessionID("sess-old")
+	if err := s.handshake("sess-old", ""); err == nil {
+		t.Fatal("handshake succeeded without a resume capability")
 	}
 
 	if srv.calledMethod("session/resume") || srv.calledMethod("session/load") {
 		t.Fatalf("no resume call expected, got %v", srv.called())
 	}
-	if !srv.calledMethod("session/new") {
-		t.Fatalf("expected session/new, got %v", srv.called())
+	if srv.calledMethod("session/new") {
+		t.Fatalf("unsupported resume must not create a replacement, got %v", srv.called())
+	}
+	if got := s.currentACPSessionID(); got != "sess-old" {
+		t.Fatalf("agent session id = %q, want preserved %q", got, "sess-old")
 	}
 }
 
