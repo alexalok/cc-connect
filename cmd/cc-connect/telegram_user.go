@@ -54,7 +54,7 @@ func telegramUserLogin(args []string) error {
 		return fmt.Errorf("telegram_user: load config: %w", err)
 	}
 	i18n = core.NewI18n(core.NormalizeLanguageString(cfg.Language))
-	opts, err := telegramUserOptions(cfg, *project)
+	opts, err := telegramUserOptions(cfg, *project, i18n)
 	if err != nil {
 		return err
 	}
@@ -83,7 +83,7 @@ func telegramUserLogin(args []string) error {
 	return nil
 }
 
-func telegramUserOptions(cfg *config.Config, project string) (map[string]any, error) {
+func telegramUserOptions(cfg *config.Config, project string, i18n *core.I18n) (map[string]any, error) {
 	var found []map[string]any
 	for _, p := range cfg.Projects {
 		if project != "" && p.Name != project {
@@ -96,7 +96,7 @@ func telegramUserOptions(cfg *config.Config, project string) (map[string]any, er
 		}
 	}
 	if len(found) != 1 {
-		return nil, fmt.Errorf("telegram_user: expected exactly one telegram_user platform, found %d; select its project with --project", len(found))
+		return nil, errors.New(i18n.Tf(core.MsgTelegramUserSelectProject, len(found)))
 	}
 	return found[0], nil
 }

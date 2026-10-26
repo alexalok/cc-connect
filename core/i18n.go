@@ -713,6 +713,7 @@ const (
 	MsgTelegramUserCode             MsgKey = "telegram_user_code"
 	MsgTelegramUserPassword         MsgKey = "telegram_user_password"
 	MsgTelegramUserLoginSuccess     MsgKey = "telegram_user_login_success"
+	MsgTelegramUserSelectProject    MsgKey = "telegram_user_select_project"
 	MsgTelegramUserTerminalRequired MsgKey = "telegram_user_terminal_required"
 	MsgTelegramUserExistingAccount  MsgKey = "telegram_user_existing_account"
 	MsgTelegramUserDisabled         MsgKey = "telegram_user_disabled"
@@ -781,6 +782,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "Telegram 使用者工作階段已儲存（使用者 ID：%d）。現在可以啟動 cc-connect。",
 		LangJapanese:           "Telegram ユーザーセッションを保存しました（ユーザー ID: %d）。cc-connect を起動できます。",
 		LangSpanish:            "Sesión de usuario de Telegram guardada (ID: %d). Ya puedes iniciar cc-connect.",
+	},
+	MsgTelegramUserSelectProject: {
+		LangEnglish:            "telegram_user: expected exactly one telegram_user platform, found %d; select its project with --project",
+		LangChinese:            "telegram_user：需要且只能配置一个 telegram_user 平台，找到 %d 个；请使用 --project 选择项目。",
+		LangTraditionalChinese: "telegram_user：需要且只能設定一個 telegram_user 平台，找到 %d 個；請使用 --project 選擇專案。",
+		LangJapanese:           "telegram_user: telegram_user プラットフォームはちょうど1つ必要ですが、%d 件見つかりました。--project でプロジェクトを選択してください。",
+		LangSpanish:            "telegram_user: se esperaba exactamente una plataforma telegram_user, pero se encontraron %d; selecciona su proyecto con --project.",
 	},
 	MsgTelegramUserTerminalRequired: {
 		LangEnglish:            "Run telegram-user login in an interactive terminal to enter the login code and password securely.",
