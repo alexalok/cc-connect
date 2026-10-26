@@ -119,6 +119,50 @@ func TestReadSessionMessages_PartialAppendAndCopiedSegmentsDoNotDuplicate(t *tes
 	}
 }
 
+func TestReadSessionMessages_DualWrittenAttachmentsMirrorOnce(t *testing.T) {
+	for _, legacyFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint("legacyFirst=", legacyFirst), func(t *testing.T) {
+			home := t.TempDir()
+			legacy := `{"timestamp":"2026-10-26T20:23:14Z","type":"event_msg","payload":{"type":"user_message","message":"Inspect this image","images":["opaque-image"]}}`
+			var current map[string]any
+			if err := json.Unmarshal([]byte(visibleMessageEvent("UserMessage", "t1", "desktop", "", "Inspect this image")), &current); err != nil {
+				t.Fatal(err)
+			}
+			item := current["payload"].(map[string]any)["item"].(map[string]any)
+			item["content"] = append(item["content"].([]any), map[string]any{"type": "localImage", "path": "/not-opened/image.png"})
+			encoded, err := json.Marshal(current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pair := []string{string(encoded), legacy}
+			if legacyFirst {
+				pair[0], pair[1] = pair[1], pair[0]
+			}
+			records := append([]string{visibleTurnEvent("t1", "composer")}, pair...)
+			// Sending identical text and another image later remains a distinct
+			// user message, even within the same turn.
+			records = append(records, pair...)
+			writeVisibleMessages(t, home, "chat", "chat", records...)
+			a := &Agent{codexHome: home}
+			messages, err := a.ReadSessionMessages(context.Background(), "chat")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(messages) != 2 {
+				t.Fatalf("dual-written attachments returned %d messages, want 2", len(messages))
+			}
+			for _, message := range messages {
+				if message.Content != "Inspect this image" || message.Attachments != 1 {
+					t.Fatalf("lost rich attachment representation: %+v", message)
+				}
+			}
+			if messages[0].ID == messages[1].ID {
+				t.Fatal("distinct repeated prompts were collapsed")
+			}
+		})
+	}
+}
+
 func TestReadSessionMessages_RejectsCorruptCompletedRecordAndWrongIdentity(t *testing.T) {
 	home := t.TempDir()
 	writeVisibleMessages(t, home, "chat-wrong", "different-chat", visibleMessageEvent("UserMessage", "t", "", "", "Wrong chat"))

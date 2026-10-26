@@ -73,13 +73,19 @@ func (a *Agent) ReadSessionMessages(ctx context.Context, sessionID string) ([]co
 		return nil, fmt.Errorf("codex: read conversation messages: %w", err)
 	}
 	sort.SliceStable(records, func(i, j int) bool { return records[i].at.Before(records[j].at) })
-	seen := make(map[string]bool)
+	seen := make(map[string]int)
 	var messages []core.SessionMessage
 	for _, record := range records {
-		if !seen[record.message.ID] {
-			messages = append(messages, record.message)
-			seen[record.message.ID] = true
+		if index, exists := seen[record.message.ID]; exists {
+			// The legacy event may arrive first and omit attachment details.
+			// Keep one message, enriching it with the UI event's media count.
+			if record.message.Attachments > messages[index].Attachments {
+				messages[index].Attachments = record.message.Attachments
+			}
+			continue
 		}
+		seen[record.message.ID] = len(messages)
+		messages = append(messages, record.message)
 	}
 	return messages, nil
 }
@@ -222,7 +228,9 @@ func readVisibleCodexEvents(ctx context.Context, scanner *bufio.Scanner) ([]visi
 		if identityTurn == "" {
 			identityTurn = record.Timestamp.Format(time.RFC3339Nano)
 		}
-		fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", identityTurn, message.Role, message.Content, message.Attachments))))
+		// Legacy events can omit media details, so attachments must not be
+		// part of the identity shared with the richer UI representation.
+		fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s", identityTurn, message.Role, message.Content))))
 		// Separate counters for legacy and current UI event formats allow
 		// dual-written events to deduplicate while preserving repeated text.
 		occurrences[format+fingerprint]++
