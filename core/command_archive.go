@@ -32,10 +32,11 @@ func (e *Engine) cmdArchive(p Platform, msg *Message, args []string) {
 	defer session.endArchive()
 	if !session.IsArchived() {
 		e.cleanupInteractiveState(interactiveKey)
+		closeSettled := e.awaitSessionClose(interactiveKey)
 		e.closingMu.Lock()
 		unsafe := e.unsafeResume[interactiveKey]
 		e.closingMu.Unlock()
-		if unsafe || e.isUnsafeAgentSession(agent, session.GetAgentSessionID()) {
+		if !closeSettled || unsafe || e.isUnsafeAgentSession(agent, session.GetAgentSessionID()) {
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgArchiveStopFailed))
 			return
 		}

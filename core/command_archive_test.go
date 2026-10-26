@@ -3,9 +3,11 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -110,11 +112,106 @@ func TestCmdArchive_TopicFailureCanBeRetriedAfterRestart(t *testing.T) {
 	if got := p.getSent(); len(got) != 1 || !strings.Contains(got[0], "Session archived, but") {
 		t.Fatalf("partial failure reply = %v", got)
 	}
+	for _, command := range []string{"/current", "/status", "/history", "/list"} {
+		e.ReceiveMessage(p, &Message{SessionKey: msg.SessionKey, Content: command})
+	}
 	e.sessions = NewSessionManager(path)
 	p.clearSent()
 	e.ReceiveMessage(p, msg)
 	if archives != 1 || deletes != 2 || len(p.getSent()) != 0 {
 		t.Fatalf("retry: archive calls=%d, delete calls=%d, replies=%v", archives, deletes, p.getSent())
+	}
+}
+
+func TestCmdArchive_AcceptedWorkerCannotStartAfterCleanup(t *testing.T) {
+	for _, archiveFails := range []bool{false, true} {
+		t.Run(fmt.Sprint("archive failure=", archiveFails), func(t *testing.T) {
+			starts := 0
+			a := &archiveCommandAgent{Agent: &controllableAgent{startSessionFn: func(context.Context, string) (AgentSession, error) {
+				starts++
+				return nil, errors.New("unexpected late start")
+			}}, archive: func(string) error {
+				if archiveFails {
+					return errors.New("archive failed")
+				}
+				return nil
+			}}
+			p := &archiveTopicPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, deleteTopic: func(any) (bool, error) { return true, nil }}
+			e := NewEngine("test", a, []Platform{p}, "", LangEnglish)
+			t.Cleanup(func() { _ = e.Stop() })
+			const key = "test:topic"
+			s := e.sessions.GetOrCreateActive(key)
+			s.SetAgentSessionID("thread-1", a.Name())
+			s.AddHistory("user", "original conversation")
+			// Model a message accepted by handleMessage whose worker has not
+			// been scheduled yet: its lock and queue placeholder already exist.
+			gen, _ := s.TryLock()
+			e.ensureInteractiveStateForQueueing(key, p, nil)
+			e.ReceiveMessage(p, &Message{SessionKey: key, Content: "/archive"})
+			p.clearSent()
+			e.processInteractiveMessageWith(p, &Message{SessionKey: key, Content: "late worker"}, s, a, e.sessions, key, "", key, gen)
+			if starts != 0 || len(p.getSent()) != 0 || s.HistoryLen() != 1 {
+				t.Fatalf("late worker survived archive cleanup: starts=%d replies=%v history=%v", starts, p.getSent(), s.GetHistory(0))
+			}
+		})
+	}
+}
+
+func TestCmdArchive_WorkerWaitingForStartupCannotPassArchive(t *testing.T) {
+	var starts atomic.Int32
+	a := &archiveCommandAgent{Agent: &controllableAgent{startSessionFn: func(context.Context, string) (AgentSession, error) {
+		starts.Add(1)
+		return nil, errors.New("unexpected late start")
+	}}, archive: func(string) error { return nil }}
+	p := &archiveTopicPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, deleteTopic: func(any) (bool, error) { return true, nil }}
+	e := NewEngine("test", a, []Platform{p}, "", LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	const key = "test:topic"
+	s := e.sessions.GetOrCreateActive(key)
+	s.SetAgentSessionID("thread-1", a.Name())
+	gen, _ := s.TryLock()
+	// Hold startup until the worker has passed its initial cancellation
+	// check. Archiving must also be checked under this mutex before spawn.
+	e.interactiveMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			e.interactiveMu.Unlock()
+		}
+	}()
+	workerDone, archiveDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		e.processInteractiveMessageWith(p, &Message{SessionKey: key, Content: "accepted message"}, s, a, e.sessions, key, "", key, gen)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for s.HistoryLen() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if s.HistoryLen() == 0 {
+		t.Fatal("worker did not reach startup")
+	}
+	go func() {
+		defer close(archiveDone)
+		e.ReceiveMessage(p, &Message{SessionKey: key, Content: "/archive"})
+	}()
+	for !s.isArchiving() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !s.isArchiving() {
+		t.Fatal("archive did not begin")
+	}
+	e.interactiveMu.Unlock()
+	locked = false
+	for _, done := range []chan struct{}{workerDone, archiveDone} {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("worker or archive did not finish")
+		}
+	}
+	if starts.Load() != 0 || len(p.getSent()) != 0 {
+		t.Fatalf("worker started during archive: starts=%d replies=%v", starts.Load(), p.getSent())
 	}
 }
 
@@ -243,5 +340,40 @@ func TestCmdArchive_UnconfirmedStopKeepsTopic(t *testing.T) {
 	e.ReceiveMessage(p, &Message{SessionKey: "test:topic", Content: "/archive"})
 	if got := p.getSent(); len(got) != 1 || got[0] != e.i18n.T(MsgArchiveStopFailed) {
 		t.Fatalf("reply = %v", got)
+	}
+}
+
+func TestCmdArchive_WaitsForPreviouslyRequestedStop(t *testing.T) {
+	closeComplete := make(chan struct{})
+	a := &archiveCommandAgent{Agent: &stubAgent{}, archive: func(string) error {
+		select {
+		case <-closeComplete:
+		default:
+			t.Error("archive ran while the previous process was still closing")
+		}
+		return nil
+	}}
+	p := &archiveTopicPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, deleteTopic: func(any) (bool, error) { return true, nil }}
+	e := NewEngine("test", a, []Platform{p}, "", LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	const key = "test:topic"
+	e.sessions.GetOrCreateActive(key).SetAgentSessionID("thread-1", a.Name())
+	finishClose := e.beginSessionClose(key)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.ReceiveMessage(p, &Message{SessionKey: key, Content: "/archive"})
+	}()
+	select {
+	case <-done:
+		t.Error("archive finished before the pending stop")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(closeComplete)
+	finishClose()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("archive did not finish after process shutdown")
 	}
 }

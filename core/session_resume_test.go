@@ -33,7 +33,7 @@ func TestResumeFallbackPolicy_PreservesBindingWhenDisabled(t *testing.T) {
 			session.SetAgentSessionID("saved-id", agent.Name())
 			e.sessions.Save()
 
-			state := e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "")
+			state := e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "", 0)
 			wantID, wantCalls := "fresh-id", []string{"saved-id", ""}
 			if policy == "disabled" {
 				wantID, wantCalls = "saved-id", []string{"saved-id"}
@@ -77,13 +77,13 @@ func TestResumeFallbackPolicy_ValidationFailurePreservesBinding(t *testing.T) {
 	const key = "test:user"
 	session := e.sessions.GetOrCreateActive(key)
 	session.SetAgentSessionID("saved-id", agent.Name())
-	state := e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "")
+	state := e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "", 0)
 	if state.agentSession != nil || len(calls) != 0 || session.GetAgentSessionID() != "saved-id" {
 		t.Fatalf("invalid saved session must remain bound and never start: calls=%q, id=%q", calls, session.GetAgentSessionID())
 	}
 	// Once the original session is available, a retry resumes that exact ID.
 	agent.valid = true
-	state = e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "")
+	state = e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "", 0)
 	if state.agentSession == nil || !reflect.DeepEqual(calls, []string{"saved-id"}) {
 		t.Fatalf("retry did not resume original binding: calls=%q", calls)
 	}
@@ -104,7 +104,7 @@ func TestResumeFallbackPolicy_UnsafeResumeRemainsBlockedAcrossRetries(t *testing
 	session.SetAgentSessionID("possibly-live-id", agent.Name())
 	e.markUnsafeResume(key)
 	for i := 0; i < 2; i++ {
-		state := e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "")
+		state := e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "", 0)
 		if state.agentSession != nil || state.startFailureMsg != MsgSessionResumeBlocked || len(calls) != 0 {
 			t.Fatalf("unsafe resume was not blocked on attempt %d: calls=%q", i+1, calls)
 		}
@@ -116,12 +116,12 @@ func TestResumeFallbackPolicy_UnsafeResumeRemainsBlockedAcrossRetries(t *testing
 	// An explicit new conversation may start and its later resume must not
 	// inherit the guard for the abandoned conversation.
 	fresh := e.sessions.NewSession(key, "fresh")
-	state := e.getOrCreateInteractiveStateWith(key, p, "ctx", fresh, e.sessions, nil, "")
+	state := e.getOrCreateInteractiveStateWith(key, p, "ctx", fresh, e.sessions, nil, "", 0)
 	if state.agentSession == nil || !reflect.DeepEqual(calls, []string{""}) {
 		t.Fatalf("explicit new conversation failed: calls=%q", calls)
 	}
 	e.cleanupInteractiveState(key)
-	state = e.getOrCreateInteractiveStateWith(key, p, "ctx", fresh, e.sessions, nil, "")
+	state = e.getOrCreateInteractiveStateWith(key, p, "ctx", fresh, e.sessions, nil, "", 0)
 	if state.agentSession == nil || !reflect.DeepEqual(calls, []string{"", "fresh-id"}) {
 		t.Fatalf("new conversation inherited the old unsafe flag: calls=%q", calls)
 	}
@@ -130,7 +130,7 @@ func TestResumeFallbackPolicy_UnsafeResumeRemainsBlockedAcrossRetries(t *testing
 	// cleared its old cc-connect binding. Selecting it must not bypass safety.
 	e.cleanupInteractiveState(key)
 	previous := e.sessions.SwitchToAgentSession(key, "possibly-live-id", agent.Name(), "previous")
-	state = e.getOrCreateInteractiveStateWith(key, p, "ctx", previous, e.sessions, nil, "")
+	state = e.getOrCreateInteractiveStateWith(key, p, "ctx", previous, e.sessions, nil, "", 0)
 	if state.agentSession != nil || state.startFailureMsg != MsgSessionResumeBlocked || len(calls) != 2 {
 		t.Fatalf("switching back bypassed unsafe native-ID guard: calls=%q", calls)
 	}
@@ -138,7 +138,7 @@ func TestResumeFallbackPolicy_UnsafeResumeRemainsBlockedAcrossRetries(t *testing
 	// A safe existing conversation is independent of the blocked ID.
 	e.cleanupInteractiveState(key)
 	safe := e.sessions.SwitchToAgentSession(key, "safe-id", agent.Name(), "safe")
-	state = e.getOrCreateInteractiveStateWith(key, p, "ctx", safe, e.sessions, nil, "")
+	state = e.getOrCreateInteractiveStateWith(key, p, "ctx", safe, e.sessions, nil, "", 0)
 	if state.agentSession == nil || !reflect.DeepEqual(calls, []string{"", "fresh-id", "safe-id"}) {
 		t.Fatalf("safe existing conversation was blocked by another ID: calls=%q", calls)
 	}
@@ -176,10 +176,10 @@ func TestResumeFallbackPolicy_UnsafeTeardownCapturedBeforeDirectNew(t *testing.T
 			// happened first to convert a channel marker into a native guard.
 			e.cmdNew(p, &Message{SessionKey: key, ReplyCtx: "ctx"}, []string{"replacement"})
 			fresh := e.sessions.GetOrCreateActive(key)
-			e.getOrCreateInteractiveStateWith(key, p, "ctx", fresh, e.sessions, nil, "")
+			e.getOrCreateInteractiveStateWith(key, p, "ctx", fresh, e.sessions, nil, "", 0)
 			e.cleanupInteractiveState(key)
 			previous := e.sessions.SwitchToAgentSession(key, "possibly-live-id", agent.Name(), "previous")
-			state := e.getOrCreateInteractiveStateWith(key, p, "ctx", previous, e.sessions, nil, "")
+			state := e.getOrCreateInteractiveStateWith(key, p, "ctx", previous, e.sessions, nil, "", 0)
 			wantCalls := []string{""}
 			if fallback {
 				wantCalls = append(wantCalls, "")

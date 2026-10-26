@@ -244,6 +244,14 @@ func (s *Session) isArchiving() bool {
 	return s.archiving
 }
 
+// canStartTurn rejects workers accepted before archive cleanup invalidated
+// their busy-lock generation, even if the archive failed or was later restored.
+func (s *Session) canStartTurn(gen uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.archiving && !s.Archived && (gen == 0 || (s.busy && gen == s.lockGen))
+}
+
 // SetName atomically updates the session's display name. The management
 // API used to write s.Name directly, which raced with GetName / listing
 // handlers that read it under s.mu.
@@ -464,6 +472,17 @@ func (sm *SessionManager) nextID() string {
 }
 
 func (sm *SessionManager) GetOrCreateActive(userKey string) *Session {
+	return sm.getOrCreateActive(userKey, false)
+}
+
+// GetOrCreateActiveForRead keeps an archived current session available for
+// inspection and topic-deletion retries. Turn processing must use
+// GetOrCreateActive, which advances to a fresh session after archival.
+func (sm *SessionManager) GetOrCreateActiveForRead(userKey string) *Session {
+	return sm.getOrCreateActive(userKey, true)
+}
+
+func (sm *SessionManager) getOrCreateActive(userKey string, keepArchived bool) *Session {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -472,7 +491,7 @@ func (sm *SessionManager) GetOrCreateActive(userKey string) *Session {
 			s.mu.Lock()
 			archived := s.Archived && !s.archiving
 			s.mu.Unlock()
-			if !archived {
+			if keepArchived || !archived {
 				return s
 			}
 		}

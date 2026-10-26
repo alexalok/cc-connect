@@ -254,6 +254,15 @@ func (s *archiveCUJSession) CurrentSessionID() string { return s.id }
 // records topic removal as a visible event, just as the chat disappearing is
 // visible to a user. All actions enter through ReceiveMessage.
 func TestCUJ_B13_ArchiveRemovesTopicAndSessionFromList(t *testing.T) {
+	for _, retryTopicDeletion := range []bool{false, true} {
+		t.Run(fmt.Sprint("retry topic deletion=", retryTopicDeletion), func(t *testing.T) {
+			runArchiveJourney(t, retryTopicDeletion)
+		})
+	}
+}
+
+func runArchiveJourney(t *testing.T, retryTopicDeletion bool) {
+	t.Helper()
 	var mu sync.Mutex
 	var available []AgentSessionInfo
 	next := 0
@@ -289,7 +298,12 @@ func TestCUJ_B13_ArchiveRemovesTopicAndSessionFromList(t *testing.T) {
 		return fmt.Errorf("session %s missing", id)
 	}}
 	p := &archiveTopicPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	deleteAttempts := 0
 	p.deleteTopic = func(any) (bool, error) {
+		deleteAttempts++
+		if retryTopicDeletion && deleteAttempts == 1 {
+			return false, errors.New("permission denied")
+		}
 		_ = p.Reply(context.Background(), nil, "[topic removed]")
 		return true, nil
 	}
@@ -317,6 +331,17 @@ func TestCUJ_B13_ArchiveRemovesTopicAndSessionFromList(t *testing.T) {
 	send("test:topic-1", "/list")
 	visible("Conversation thread-1")
 	send("test:topic-1", "/archive")
+	if retryTopicDeletion {
+		visible(e.i18n.Tf(MsgArchiveTopicFailed, errors.New("permission denied")))
+		send("test:topic-1", "/current")
+		visible("thread-1")
+		send("test:topic-1", "/status")
+		visible("thread-1")
+		send("test:topic-1", "/history")
+		visible("remember this conversation")
+		e.sessions = NewSessionManager(e.sessions.StorePath())
+		send("test:topic-1", "/archive")
+	}
 	visible("[topic removed]")
 	send("test:topic-2", "/list")
 	visible(e.i18n.T(MsgListEmpty))
