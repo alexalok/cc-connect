@@ -52,6 +52,8 @@ type Agent struct {
 	mu              sync.RWMutex
 }
 
+var _ core.SessionWorkDirProvider = (*Agent)(nil)
+
 func New(opts map[string]any) (core.Agent, error) {
 	workDir, _ := opts["work_dir"].(string)
 	if workDir == "" {
@@ -553,6 +555,39 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	return newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName, systemPrompt, appendPrompt)
 }
 
+// GetSessionWorkDir resolves a saved session before its process starts, without
+// changing the shared default directory used by new sessions and other topics.
+// A saved provider selects its environment without changing the active provider.
+// An empty result keeps the configured-directory behavior when full-profile
+// session discovery is disabled or no concrete session has been selected.
+func (a *Agent) GetSessionWorkDir(ctx context.Context, sessionID, providerName string) (string, error) {
+	if sessionID == "" || sessionID == core.ContinueSession {
+		return "", nil
+	}
+	a.mu.RLock()
+	if !a.listAllSessions {
+		a.mu.RUnlock()
+		return "", nil
+	}
+	if err := ctx.Err(); err != nil {
+		a.mu.RUnlock()
+		return "", err
+	}
+	codexHome, err := a.sessionCodexHomeForProviderLocked(providerName)
+	a.mu.RUnlock()
+	if err != nil {
+		return "", fmt.Errorf("codex: resolve profile directory: %w", err)
+	}
+	workDir, err := codexResumeWorkDir(sessionID, codexHome)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", ctxErr
+	}
+	if err != nil {
+		return "", fmt.Errorf("codex: resolve session working directory: %w", err)
+	}
+	return workDir, nil
+}
+
 func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
 	a.mu.RLock()
 	codexHome, err := a.sessionCodexHomeLocked()
@@ -607,6 +642,24 @@ func (a *Agent) sessionCodexHomeLocked() (string, error) {
 		return a.codexHome, nil
 	}
 	return absoluteCodexHome(a.codexHome, a.mergedSessionEnvLocked())
+}
+
+// A stopped session may have a different provider saved than the agent's
+// current default. Resolve that provider only for this lookup, so a command
+// in one topic cannot change the provider used by another topic.
+// Call with a.mu held and list_all_sessions enabled.
+func (a *Agent) sessionCodexHomeForProviderLocked(providerName string) (string, error) {
+	if providerName == "" {
+		return a.sessionCodexHomeLocked()
+	}
+	for _, provider := range a.providers {
+		if provider.Name == providerName {
+			env := append([]string(nil), a.configEnv...)
+			env = append(env, codexProviderEnv(provider)...)
+			return absoluteCodexHome(a.codexHome, append(env, a.sessionEnv...))
+		}
+	}
+	return "", fmt.Errorf("codex: saved provider %q is not configured", providerName)
 }
 
 // SetMode changes the approval mode for future sessions.
@@ -834,7 +887,10 @@ func (a *Agent) providerEnvLocked() []string {
 	if a.activeIdx < 0 || a.activeIdx >= len(a.providers) {
 		return nil
 	}
-	p := a.providers[a.activeIdx]
+	return codexProviderEnv(a.providers[a.activeIdx])
+}
+
+func codexProviderEnv(p core.ProviderConfig) []string {
 	var env []string
 	if p.APIKey != "" {
 		env = append(env, "OPENAI_API_KEY="+p.APIKey)

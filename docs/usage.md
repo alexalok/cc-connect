@@ -58,8 +58,17 @@ the next page, and `/switch <number | id_prefix | name>` selects a conversation.
 On the next message, both Codex backends resume in that session's saved working
 directory, including staging incoming attachments there. Other topics and new
 sessions keep their own working directories; no `/dir` change is needed.
-Project commands such as `/dir`, `/shell`, and `/diff` continue to use the
-project's default directory, rather than the selected Codex session's directory.
+`/shell`, `/diff`, and relative `/show` references use the selected conversation's
+directory, and `/dir` and `/status` display it. This works immediately after
+`/switch` and after a bridge restart, without starting Codex first. A live
+session's directory takes precedence over its saved directory. Selecting a
+conversation does not change another topic's directory or the default for `/new`.
+Saved-directory lookups honor the conversation's persisted provider choice
+without changing the agent's active provider.
+If the selected directory is unavailable, these commands report an error instead
+of using the project default. Explicit `/dir <path>` and `/dir reset` retain their
+existing directory-switching behavior; relative paths start from the selected
+conversation's directory.
 Archived sessions and helper subagents remain excluded, and `filter_external_sessions`
 and multi-workspace ownership filters still apply. This does not mirror activity
 from an independently running Codex client into the chat.
@@ -312,7 +321,10 @@ Switch where the next agent session starts, directly from chat.
 - If you are the only user of this bot, `admin_from = "*"` also works, but it grants every allowed user privileged command access.
 - Restart `cc-connect` after updating `config.toml`.
 - Directory changes apply to the next session in the current project.
-- Relative paths are resolved from the current agent work directory.
+- Relative paths are resolved from the selected conversation's effective directory,
+  falling back to the configured agent directory when there is no session override.
+- Viewing `/dir` does not change the project default. Explicit directory changes
+  keep their project-wide effect outside multi-workspace mode.
 - Directory history is project-scoped and can be switched by index.
 - `/cd` is kept for compatibility, but `/dir` is the primary command.
 
