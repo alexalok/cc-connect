@@ -312,7 +312,10 @@ func TestAllDirectories_PreservesCodexHomeEnvironmentOverrides(t *testing.T) {
 	t.Setenv("HOME", root)
 	t.Setenv("USERPROFILE", root)
 	homes := map[string]string{}
-	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, source := range []string{"process", "project", "provider", "session", "explicit", "default"} {
 		home := filepath.Join(root, source)
 		if source == "default" {
