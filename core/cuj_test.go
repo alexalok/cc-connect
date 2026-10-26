@@ -243,6 +243,87 @@ type cujDirectorySession struct {
 func (s *cujDirectorySession) CurrentSessionID() string { return s.id }
 func (s *cujDirectorySession) GetWorkDir() string       { return s.workDir }
 
+type archiveCUJSession struct {
+	*cujAgentSession
+	id string
+}
+
+func (s *archiveCUJSession) CurrentSessionID() string { return s.id }
+
+// CUJ-B13: chat, list, archive, and open another conversation. The platform
+// records topic removal as a visible event, just as the chat disappearing is
+// visible to a user. All actions enter through ReceiveMessage.
+func TestCUJ_B13_ArchiveRemovesTopicAndSessionFromList(t *testing.T) {
+	var mu sync.Mutex
+	var available []AgentSessionInfo
+	next := 0
+	boundary := &controllableAgent{
+		startSessionFn: func(_ context.Context, resumeID string) (AgentSession, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			next++
+			id := fmt.Sprintf("thread-%d", next)
+			s := &archiveCUJSession{cujAgentSession: newCUJAgentSession(), id: id}
+			s.reply = "Fresh conversation " + id
+			if resumeID != "" {
+				s.reply = "Resumed " + resumeID
+			}
+			available = append(available, AgentSessionInfo{ID: id, Summary: "Conversation " + id})
+			return s, nil
+		},
+		listFn: func() ([]AgentSessionInfo, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]AgentSessionInfo(nil), available...), nil
+		},
+	}
+	a := &archiveCommandAgent{Agent: boundary, archive: func(id string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		for i, s := range available {
+			if s.ID == id {
+				available = append(available[:i], available[i+1:]...)
+				return nil
+			}
+		}
+		return fmt.Errorf("session %s missing", id)
+	}}
+	p := &archiveTopicPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	p.deleteTopic = func(any) (bool, error) {
+		_ = p.Reply(context.Background(), nil, "[topic removed]")
+		return true, nil
+	}
+	e := NewEngine("test", a, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	send := func(key, content string) {
+		p.clearSent()
+		e.ReceiveMessage(p, &Message{SessionKey: key, UserID: "alice", Content: content})
+	}
+	visible := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			for _, text := range p.getSent() {
+				if strings.Contains(text, want) {
+					return
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("expected user to see %q; replies: %v", want, p.getSent())
+	}
+	send("test:topic-1", "remember this conversation")
+	visible("Fresh conversation thread-1")
+	send("test:topic-1", "/list")
+	visible("Conversation thread-1")
+	send("test:topic-1", "/archive")
+	visible("[topic removed]")
+	send("test:topic-2", "/list")
+	visible(e.i18n.T(MsgListEmpty))
+	send("test:topic-2", "start another conversation")
+	visible("Fresh conversation thread-2")
+}
+
 // cujAgentSession is an AgentSession whose reply is controllable per-Send.
 // Tests can set reply (and optionally toolEvent) before each Send to drive
 // scenarios like "agent calls tool", "agent returns error", "agent succeeds".

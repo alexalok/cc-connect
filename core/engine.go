@@ -3147,6 +3147,12 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		interactiveKey = resolvedWorkspace + ":" + msg.SessionKey
 	}
 
+	// Keep a concurrent /new or message from replacing the session while its
+	// archive command is still removing the enclosing topic.
+	if active := sessions.FindByID(sessions.ActiveSessionID(msg.SessionKey)); active != nil && active.isArchiving() {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgArchiveInProgress))
+		return
+	}
 	if len(msg.Images) == 0 && strings.HasPrefix(content, "/") {
 		if e.handleCommand(p, msg, content) {
 			return
@@ -3219,6 +3225,10 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	if gen, locked := session.TryLock(); locked {
 		lockGen = gen
 	} else {
+		if session.isArchiving() {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgArchiveInProgress))
+			return
+		}
 		if e.stopCurrentMessageIfRecalled(interactiveKey) {
 			if g, ok := e.waitForSessionLock(session, recalledStopLockWait); ok {
 				lockGen = g
@@ -7067,6 +7077,7 @@ var builtinCommands = []struct {
 	id    string
 }{
 	{[]string{"new"}, "new"},
+	{[]string{"archive"}, "archive"},
 	{[]string{"list", "sessions"}, "list"},
 	{[]string{"switch"}, "switch"},
 	{[]string{"name", "rename"}, "name"},
@@ -7267,6 +7278,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 	switch cmdID {
 	case "new":
 		e.cmdNew(p, msg, args)
+	case "archive":
+		e.cmdArchive(p, msg, args)
 	case "list":
 		e.cmdList(p, msg, args)
 	case "switch":
@@ -10123,6 +10136,7 @@ func helpCardGroups() []helpCardGroup {
 			titleKey: MsgHelpSessionSection,
 			items: []helpCardItem{
 				{command: "/new", action: "act:/new"},
+				{command: "/archive", action: "cmd:/archive"},
 				{command: "/cancel", action: "cmd:/cancel"},
 				{command: "/list", action: "nav:/list"},
 				{command: "/current", action: "nav:/current"},

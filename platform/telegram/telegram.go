@@ -45,6 +45,7 @@ type telegramBot interface {
 	SendChatAction(ctx context.Context, params *tgbot.SendChatActionParams) (bool, error)
 	EditMessageText(ctx context.Context, params *tgbot.EditMessageTextParams) (*models.Message, error)
 	DeleteMessage(ctx context.Context, params *tgbot.DeleteMessageParams) (bool, error)
+	DeleteForumTopic(ctx context.Context, params *tgbot.DeleteForumTopicParams) (bool, error)
 	AnswerCallbackQuery(ctx context.Context, params *tgbot.AnswerCallbackQueryParams) (bool, error)
 	SetMyCommands(ctx context.Context, params *tgbot.SetMyCommandsParams) (bool, error)
 	GetFile(ctx context.Context, params *tgbot.GetFileParams) (*models.File, error)
