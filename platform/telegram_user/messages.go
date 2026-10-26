@@ -204,3 +204,13 @@ func (p *Platform) ChannelKeyFromSessionKey(key string) (string, bool) {
 	}
 	return key, true
 }
+
+// RelayGroupVisibilityKey keeps request and response echoes in the caller's
+// chat and forum topic. Both isolated and shared session keys reconstruct to
+// the same reply target, without requiring a synthetic relay sender.
+func (p *Platform) RelayGroupVisibilityKey(key string) (string, bool) {
+	if _, err := p.ReconstructReplyCtx(key); err != nil {
+		return "", false
+	}
+	return key, true
+}
