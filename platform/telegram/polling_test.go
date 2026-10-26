@@ -154,15 +154,21 @@ func TestDefaultNewBot_SendFailureDoesNotRestartPolling(t *testing.T) {
 	<-done
 }
 
-func TestPlatform_PollingOutageDrainsBacklogBeforeResuming(t *testing.T) {
+func TestPlatform_PollingReconnectDoesNotSummarizeProcessedUnacknowledgedUpdates(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	now := time.Now().UTC().Truncate(time.Second)
+	processed := []*models.Update{
+		downtimeMessage(8, int(now.Unix())-1, 10, 21),
+		downtimeMessage(9, int(now.Unix())-1, 10, 21),
+	}
+	processed[0].Message.Text, processed[1].Message.Text = "before outage one", "before outage two"
 	old := downtimeMessage(10, int(now.Unix())-1, 10, 21)
 	live := downtimeMessage(11, int(now.Unix())+10, 10, 21)
 	old.Message.Text, live.Message.Text = "during outage", "after recovery"
 	var mu sync.Mutex
 	failed := false
+	delivered := false
 	confirmed := int64(0)
 	var notices []url.Values
 	readyCount := 0
@@ -178,6 +184,13 @@ func TestPlatform_PollingOutageDrainsBacklogBeforeResuming(t *testing.T) {
 			return pollingTestResponse(&models.Message{ID: 99})
 		case strings.HasSuffix(req.URL.Path, "/getUpdates"):
 			if req.Method == http.MethodPost && !failed {
+				if !delivered {
+					delivered = true
+					mu.Unlock()
+					return pollingTestResponse(processed)
+				}
+				// Fail before Telegram sees the acknowledgement offset. The
+				// processed batch remains queued alongside the outage message.
 				failed = true
 				mu.Unlock()
 				return nil, errors.New("network unavailable")
@@ -188,7 +201,7 @@ func TestPlatform_PollingOutageDrainsBacklogBeforeResuming(t *testing.T) {
 			}
 			var updates []*models.Update
 			if failed {
-				for _, update := range []*models.Update{old, live} {
+				for _, update := range []*models.Update{processed[0], processed[1], old, live} {
 					if update.ID >= confirmed {
 						updates = append(updates, update)
 					}
@@ -220,8 +233,8 @@ func TestPlatform_PollingOutageDrainsBacklogBeforeResuming(t *testing.T) {
 		lifecycleHandler: testLifecycleHandler{onReady: func(core.Platform) { readyCount++ }},
 	}
 	p.connectLoop(ctx)
-	if !reflect.DeepEqual(received, []string{"after recovery"}) || readyCount != 2 {
-		t.Fatalf("received=%v ready=%d; want only live input after a second recovery", received, readyCount)
+	if !reflect.DeepEqual(received, []string{"before outage one", "before outage two", "after recovery"}) || readyCount != 2 {
+		t.Fatalf("received=%v ready=%d; want processed inputs once and only live input after recovery", received, readyCount)
 	}
 	mu.Lock()
 	defer mu.Unlock()

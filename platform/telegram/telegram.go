@@ -115,6 +115,7 @@ type Platform struct {
 	topicRouting          privateTopicRouting
 	i18n                  *core.I18n
 	downtime              *downtimeDrain
+	processedCursor       updateCursor // protected by mu
 
 	mu                  sync.RWMutex
 	bot                 telegramBot
@@ -370,7 +371,20 @@ func (p *Platform) runConnection(ctx context.Context) error {
 }
 
 func (p *Platform) processUpdate(ctx context.Context, update *models.Update) {
-	if update == nil || p.discardLateDowntimeUpdate(ctx, update) {
+	if update == nil {
+		return
+	}
+	p.handleUpdate(ctx, update)
+	// The production poller dispatches serially. Remember completed updates,
+	// including deliberately ignored ones, before a reconnect can drain them.
+	// Use the latest ID rather than a maximum: Telegram can reset its IDs.
+	p.mu.Lock()
+	p.processedCursor = updateCursor{nextOffset: update.ID + 1, updatedAt: time.Now()}
+	p.mu.Unlock()
+}
+
+func (p *Platform) handleUpdate(ctx context.Context, update *models.Update) {
+	if p.discardLateDowntimeUpdate(ctx, update) {
 		return
 	}
 	if update.CallbackQuery != nil {

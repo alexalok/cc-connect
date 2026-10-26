@@ -203,6 +203,8 @@ On startup or reconnect, cc-connect skips pending messages sent before the conne
 
 A failed polling request returns to the connection retry loop, so this recovery also runs after network outages while cc-connect stays running. Live updates fetched before the failure finish processing before reconnection; errors sending replies do not restart polling.
 
+Updates already handled before a polling disconnect are acknowledged on recovery and excluded from skipped-message notices.
+
 Messages arriving during recovery remain available for normal processing. If Telegram delivers an older message after the first live message, cc-connect skips it and updates the existing summary instead of sending another notice. Counts cover only updates Telegram still retains. Notices use the configured cc-connect language; delivery failures are logged without blocking the connection or repeatedly posting copies.
 
 ---
