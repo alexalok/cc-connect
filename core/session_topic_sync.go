@@ -135,24 +135,33 @@ func (w *sessionTopicSync) poll(ctx context.Context) error {
 		if title == "" {
 			title = w.engine.i18n.T(MsgUntitled) + " " + info.ID
 		}
-		key, err := w.target.CreateSessionTopic(ctx, title)
-		if err != nil {
-			return fmt.Errorf("session topic sync: create topic: %w", err)
-		}
-		if key == "" {
-			return fmt.Errorf("session topic sync: platform returned an empty session key")
-		}
-		w.state.Topics[info.ID] = key
-		// Keep the returned topic even if persistence fails so an in-process
-		// retry cannot create a duplicate. Save its link before the session
-		// snapshot, allowing startup to recover a partially saved binding.
-		err = w.save()
-		w.bind(key, info.ID, title)
-		if err != nil {
+		if err := w.createAndBind(ctx, info.ID, title); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (w *sessionTopicSync) createAndBind(ctx context.Context, id, title string) error {
+	// The key does not exist until the API returns, so take the creation gate
+	// before publishing the topic. First inbound messages wait at the engine
+	// entrypoint until the saved link is usable, including slash commands.
+	w.engine.topicSyncBindingMu.Lock()
+	defer w.engine.topicSyncBindingMu.Unlock()
+	key, err := w.target.CreateSessionTopic(ctx, title)
+	if err != nil {
+		return fmt.Errorf("session topic sync: create topic: %w", err)
+	}
+	if key == "" {
+		return fmt.Errorf("session topic sync: platform returned an empty session key")
+	}
+	w.state.Topics[id] = key
+	// Keep the returned topic even if persistence fails so an in-process
+	// retry cannot create a duplicate. Save its link before the session
+	// snapshot, allowing startup to recover a partially saved binding.
+	err = w.save()
+	w.bind(key, id, title)
+	return err
 }
 
 // Unlike the /list filter, discovery must also deduplicate IDs retained in a

@@ -28,9 +28,11 @@ func (a *topicDiscoveryAgent) DiscoverSessions(ctx context.Context, _ time.Time)
 
 type topicSyncPlatform struct {
 	stubPlatformEngine
-	target string
-	err    error
-	keys   []string
+	target  string
+	err     error
+	keys    []string
+	created chan string
+	release <-chan struct{}
 }
 
 func (p *topicSyncPlatform) SessionTopicSyncConfig() (string, time.Duration) {
@@ -38,13 +40,18 @@ func (p *topicSyncPlatform) SessionTopicSyncConfig() (string, time.Duration) {
 }
 func (p *topicSyncPlatform) CreateSessionTopic(_ context.Context, title string) (string, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.err != nil {
+		p.mu.Unlock()
 		return "", p.err
 	}
 	key := fmt.Sprintf("test:owner:topic%d", len(p.keys)+1)
 	p.keys = append(p.keys, key)
 	p.sent = append(p.sent, "topic: "+title)
+	p.mu.Unlock()
+	if p.created != nil {
+		p.created <- key
+		<-p.release
+	}
 	return key, nil
 }
 

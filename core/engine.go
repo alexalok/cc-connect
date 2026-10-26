@@ -360,6 +360,7 @@ type Engine struct {
 	platforms             []Platform
 	sessions              *SessionManager
 	topicSyncWG           sync.WaitGroup
+	topicSyncBindingMu    sync.RWMutex
 	ctx                   context.Context
 	cancel                context.CancelFunc
 	i18n                  *I18n
@@ -2991,6 +2992,13 @@ func (e *Engine) startMessageRecallMonitor(sessionKey string) context.CancelFunc
 }
 
 func (e *Engine) handleMessage(p Platform, msg *Message) {
+	// A remotely created topic can receive input before its creation API
+	// returns. Wait for its initial binding before commands or regular input
+	// can implicitly create a fresh session. Existing conversations proceed.
+	if e.sessions.ActiveSessionID(msg.SessionKey) == "" {
+		e.topicSyncBindingMu.RLock()
+		e.topicSyncBindingMu.RUnlock()
+	}
 	if msg.Recalled {
 		e.handleMessageRecall(p, msg)
 		return

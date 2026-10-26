@@ -256,6 +256,7 @@ func (a *cujTopicDiscoveryAgent) GetSessionHistory(context.Context, string, int)
 }
 
 func TestCUJ_B13_ExternalChatBecomesResumableTopic(t *testing.T) {
+	t.Run("ImmediateReplyWaitsForBinding", testCUJExternalTopicImmediateReply)
 	a := &cujTopicDiscoveryAgent{cujDirectoryAgent: cujDirectoryAgent{
 		defaultWorkDir: "/default", workDirs: map[string]string{"desktop-chat": "/desktop/project"},
 	}}
@@ -307,6 +308,57 @@ func TestCUJ_B13_ExternalChatBecomesResumableTopic(t *testing.T) {
 	if !env.sentContains("desktop-chat") {
 		t.Fatalf("restart lost the link: %v", p.getSent())
 	}
+}
+
+func testCUJExternalTopicImmediateReply(t *testing.T) {
+	a := &cujTopicDiscoveryAgent{cujDirectoryAgent: cujDirectoryAgent{
+		defaultWorkDir: "/default", workDirs: map[string]string{"native": "/native/project"},
+		sessions: []AgentSessionInfo{{ID: "native", Summary: "Native chat"}},
+	}}
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCreation := func() { releaseOnce.Do(func() { close(release) }) }
+	p := &topicSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, target: "owner", created: make(chan string, 1), release: release}
+	e, worker := newTopicSyncTest(t, a, p, filepath.Join(t.TempDir(), "sessions.json"))
+	polled := make(chan error, 1)
+	go func() { polled <- worker.poll(e.ctx) }()
+	t.Cleanup(func() { releaseCreation(); <-polled })
+	key := <-p.created // Telegram has exposed the topic before returning its API result.
+	var received sync.WaitGroup
+	send := func(content string) {
+		e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", UserID: "owner", Content: content, ReplyCtx: key})
+	}
+	// Action 1: immediately ask for the chat selected by the new topic.
+	initialReply := make(chan struct{})
+	received.Add(1)
+	go func() { defer received.Done(); send("/current"); close(initialReply) }()
+	t.Cleanup(func() { releaseCreation(); received.Wait() })
+	select {
+	case <-initialReply:
+		t.Fatal("incoming reply was processed before the topic could be bound")
+	case <-time.After(50 * time.Millisecond):
+	}
+	releaseCreation()
+	select {
+	case <-initialReply:
+	case <-time.After(3 * time.Second):
+		t.Fatal("incoming reply stayed blocked")
+	}
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	if !env.sentContains("native") {
+		t.Fatalf("wrong chat selected: %v", p.getSent())
+	}
+	// Actions 2 and 3: read the native history, then continue that conversation.
+	p.clearSent()
+	send("/history")
+	if !env.sentContains("Original desktop question") {
+		t.Fatalf("native history missing: %v", p.getSent())
+	}
+	p.clearSent()
+	send("continue this work")
+	env.waitFor("native continuation after immediate reply", 3*time.Second, func() bool {
+		return env.sentContains("session=native cwd=/native/project")
+	})
 }
 
 // cujAgentSession is an AgentSession whose reply is controllable per-Send.
