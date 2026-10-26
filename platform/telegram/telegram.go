@@ -253,12 +253,13 @@ func (p *Platform) SetLifecycleHandler(h core.PlatformLifecycleHandler) {
 }
 
 func defaultNewBot(token string, onUpdate func(context.Context, *models.Update), httpClient *http.Client) (telegramBot, *models.User, func(context.Context), error) {
-	handler := func(ctx context.Context, b *tgbot.Bot, update *models.Update) {
-		onUpdate(ctx, update)
-	}
+	polling := &pollingLifecycle{}
 	opts := []tgbot.Option{
-		tgbot.WithDefaultHandler(handler),
 		tgbot.WithNotAsyncHandlers(),
+		// A failed poll must not strand already-fetched live updates in the
+		// library's queue when its polling context is cancelled.
+		tgbot.WithUpdatesChannelCap(0),
+		tgbot.WithErrorsHandler(polling.errorHandler(token)),
 	}
 	if httpClient != nil {
 		opts = append(opts, tgbot.WithHTTPClient(60*time.Second, httpClient))
@@ -277,7 +278,7 @@ func defaultNewBot(token string, onUpdate func(context.Context, *models.Update),
 	return &startupBot{
 		telegramBot: newRateLimitRetryBot(b), token: token, client: httpClient,
 		setOffset: func(lastID int64) { tgbot.WithInitialOffset(lastID)(b) },
-	}, me, b.Start, nil
+	}, me, func(ctx context.Context) { polling.start(ctx, b, onUpdate) }, nil
 }
 
 func (p *Platform) connectLoop(ctx context.Context) {
