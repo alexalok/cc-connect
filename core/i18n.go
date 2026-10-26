@@ -259,6 +259,9 @@ const (
 	MsgListError                 MsgKey = "list_error"
 	MsgHistoryEmpty              MsgKey = "history_empty"
 	MsgHistoryReadFailed         MsgKey = "history_read_failed"
+	MsgSyncedUserMessage         MsgKey = "synced_user_message"
+	MsgSyncedAssistantMessage    MsgKey = "synced_assistant_message"
+	MsgSyncedAttachments         MsgKey = "synced_attachments"
 	MsgNameUsage                 MsgKey = "name_usage"
 	MsgNameSet                   MsgKey = "name_set"
 	MsgNameNoSession             MsgKey = "name_no_session"
@@ -1568,6 +1571,27 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "❌ 取得會話列表失敗: %v",
 		LangJapanese:           "❌ セッション一覧の取得に失敗しました: %v",
 		LangSpanish:            "❌ Error al listar sesiones: %v",
+	},
+	MsgSyncedUserMessage: {
+		LangEnglish:            "**You:**\n%s",
+		LangChinese:            "**你：**\n%s",
+		LangTraditionalChinese: "**你：**\n%s",
+		LangJapanese:           "**あなた：**\n%s",
+		LangSpanish:            "**Tú:**\n%s",
+	},
+	MsgSyncedAssistantMessage: {
+		LangEnglish:            "**Assistant:**\n%s",
+		LangChinese:            "**助手：**\n%s",
+		LangTraditionalChinese: "**助手：**\n%s",
+		LangJapanese:           "**アシスタント：**\n%s",
+		LangSpanish:            "**Asistente:**\n%s",
+	},
+	MsgSyncedAttachments: {
+		LangEnglish:            "[%d attachment(s); open the original chat to view]",
+		LangChinese:            "[%d 个附件；请在原对话中查看]",
+		LangTraditionalChinese: "[%d 個附件；請在原對話中查看]",
+		LangJapanese:           "[添付ファイル %d 件。元のチャットで確認してください]",
+		LangSpanish:            "[%d adjunto(s); abre el chat original para verlos]",
 	},
 	MsgHistoryEmpty: {
 		LangEnglish:            "No history in current session.",

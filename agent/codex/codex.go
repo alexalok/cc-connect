@@ -50,6 +50,8 @@ type Agent struct {
 	configEnv       []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
 	sessionEnv      []string
 	mu              sync.RWMutex
+	messageCacheMu  sync.Mutex
+	messageCache    map[string]visibleMessageCache
 }
 
 var _ core.SessionWorkDirProvider = (*Agent)(nil)
