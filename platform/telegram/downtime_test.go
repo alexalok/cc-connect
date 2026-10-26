@@ -140,7 +140,7 @@ func TestDrainDowntime_CountsAllPagesWithoutInvokingAgentOrDownloadingMedia(t *t
 		t.Fatalf("notices = %d, want 3", len(sender.sends))
 	}
 	first := sender.sends[0]
-	if first.ChatID != int64(10) || first.MessageThreadID != 21 || !strings.Contains(first.Text, "skipped 5 messages in this topic") || !strings.Contains(first.Text, time.Unix(int64(date), 0).UTC().Format("2 Jan 2006 at 15:04:05 UTC")) || !strings.Contains(first.Text, "Please resend") {
+	if first.ChatID != int64(10) || first.MessageThreadID != 21 || !strings.Contains(first.Text, "skipped 5 messages in this topic") || !strings.Contains(first.Text, time.Unix(int64(date), 0).UTC().Format("2006-01-02 15:04:05 UTC")) || !strings.Contains(first.Text, "Please resend") {
 		t.Fatalf("unexpected notice: %+v", first)
 	}
 	if sender.GetFileCallCount() != 0 || sender.answerCallbackCalls != 0 {
@@ -176,7 +176,7 @@ func TestDrainDowntime_PreservesLiveMessagesAndEditsNoticeForLateOldMessage(t *t
 	if len(received) != 1 || len(sender.sends) != 1 || len(sender.edits) != 1 {
 		t.Fatalf("received=%v sends=%d edits=%d", received, len(sender.sends), len(sender.edits))
 	}
-	if !strings.Contains(sender.edits[0].Text, "skipped 2 messages") || sender.edits[0].MessageID != 101 || !strings.Contains(sender.edits[0].Text, time.Unix(int64(lateOld.Message.Date), 0).UTC().Format("2 Jan 2006 at 15:04:05 UTC")) {
+	if !strings.Contains(sender.edits[0].Text, "skipped 2 messages") || sender.edits[0].MessageID != 101 || !strings.Contains(sender.edits[0].Text, time.Unix(int64(lateOld.Message.Date), 0).UTC().Format("2006-01-02 15:04:05 UTC")) {
 		t.Fatalf("wrong updated notice: %+v", sender.edits[0])
 	}
 }
@@ -314,15 +314,17 @@ func TestPendingUpdates_RejectsHTTPAndAPIErrorsAndRedactsToken(t *testing.T) {
 	}
 }
 
-func TestDowntimeNotices_UseConfiguredLanguage(t *testing.T) {
+func TestDowntimeNotices_UseConfiguredLanguageAndNumericUTCTimestamps(t *testing.T) {
 	for _, lang := range []core.Language{core.LangEnglish, core.LangChinese, core.LangTraditionalChinese, core.LangJapanese, core.LangSpanish} {
 		t.Run(string(lang), func(t *testing.T) {
 			p := &Platform{}
 			p.SetI18n(core.NewI18n(lang))
 			sender := newDowntimeNoticeBot()
-			p.sendDowntimeNotice(context.Background(), sender, downtimeDestination{chatID: 1}, &downtimeSummary{count: 3, earliest: time.Unix(100, 0)})
+			earliest := time.Date(2026, time.October, 26, 10, 11, 12, 0, time.UTC)
+			p.sendDowntimeNotice(context.Background(), sender, downtimeDestination{chatID: 1}, &downtimeSummary{count: 3, earliest: earliest})
 			text := sender.sends[0].Text
-			if strings.Contains(text, "%!") || !strings.Contains(text, "3") || !strings.Contains(text, "UTC") {
+			// English month names and "at" must not leak into translated notices.
+			if strings.Contains(text, "%!") || !strings.Contains(text, "3") || !strings.Contains(text, "2026-10-26 10:11:12 UTC") {
 				t.Fatalf("invalid localized notice: %s", text)
 			}
 			if lang != core.LangEnglish && strings.HasPrefix(text, "Sorry") {
