@@ -351,6 +351,7 @@ func TestAppServerSession_ResumeDoesNotRequestExtendedHistory(t *testing.T) {
 		ctx:     ctx,
 		stdin:   stdin,
 		pending: make(map[int64]chan rpcResponseEnvelope),
+		workDir: "/tmp/launch-directory",
 	}
 
 	done := make(chan error, 1)
@@ -391,6 +392,9 @@ func TestAppServerSession_ResumeDoesNotRequestExtendedHistory(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for thread resume")
+	}
+	if got := s.GetWorkDir(); got != "/tmp/project" {
+		t.Fatalf("resumed working directory = %q, want server-provided /tmp/project", got)
 	}
 }
 
