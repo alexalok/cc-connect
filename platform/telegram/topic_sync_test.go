@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -115,5 +118,39 @@ func TestCreateSessionTopic_DisabledTopicsAndRedactedFailures(t *testing.T) {
 	p.selfUser = &models.User{HasTopicsEnabled: true}
 	if _, err := p.CreateSessionTopic(context.Background(), "chat"); err == nil || strings.Contains(err.Error(), p.token) {
 		t.Fatalf("unredacted error: %v", err)
+	}
+}
+
+func TestCreateSessionTopic_ProductionWrappersForwardAndRetry(t *testing.T) {
+	slept := recordSleeps(t)
+	creates := 0
+	client := pollingTestClient(func(req *http.Request, params url.Values) (*http.Response, error) {
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/getMe"):
+			return pollingTestResponse(&models.User{ID: 1, IsBot: true, HasTopicsEnabled: true})
+		case strings.HasSuffix(req.URL.Path, "/createForumTopic"):
+			creates++
+			if params.Get("chat_id") != "123" || params.Get("name") != "External chat" {
+				t.Errorf("topic creation parameters: %v", params)
+			}
+			if creates == 1 {
+				return &http.Response{StatusCode: 429, Body: io.NopCloser(strings.NewReader(`{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":1}}`))}, nil
+			}
+			return pollingTestResponse(&models.ForumTopic{MessageThreadID: 42})
+		default:
+			return nil, fmt.Errorf("unexpected method: %s", req.URL.Path)
+		}
+	})
+	bot, me, _, err := defaultNewBot("test-token", func(context.Context, *models.Update) {}, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Platform{bot: bot, selfUser: me, topicSyncChatID: 123}
+	key, err := p.CreateSessionTopic(context.Background(), "External chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key != "telegram:123:42:123" || creates != 2 || len(*slept) != 1 || (*slept)[0] != time.Second {
+		t.Fatalf("key=%q creates=%d sleeps=%v", key, creates, *slept)
 	}
 }
