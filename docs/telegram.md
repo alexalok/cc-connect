@@ -247,11 +247,15 @@ If multiple topics are created before their opening messages arrive, the
 missing IDs can be ambiguous. Those messages are not sent to an agent;
 cc-connect asks the sender to resend them inside the intended topic.
 
-### 6.4 New Codex Chats as DM Topics
+### 6.4 New Codex Chats as Telegram Topics
 
-To automatically create a private topic when you start a new Codex chat in
-the TUI or desktop app, enable private topics in BotFather, start a DM with
-the bot, and set an explicit destination in the Telegram platform options:
+To automatically create a topic when you start a new Codex chat in the TUI
+or desktop app, set `topic_sync_chat_id` in the Telegram platform options.
+Use a user's ID for a DM or the group's ID for a supergroup. cc-connect
+queries Telegram to detect the destination type; no separate type setting
+is needed. Numeric strings and integers are accepted.
+
+For a **DM**, enable private topics in BotFather and start a DM with the bot:
 
 ```toml
 [[projects.platforms]]
@@ -262,6 +266,39 @@ allow_from = "123456789"
 topic_sync_chat_id = "123456789" # Your private chat ID (also your user ID)
 topic_sync_interval_seconds = 10
 ```
+
+For a **supergroup with Topics enabled**, add the bot as an administrator
+with **Manage Topics** permission and use the group's numeric ID (normally
+starting with `-100`):
+
+```toml
+[[projects.platforms]]
+type = "telegram"
+[projects.platforms.options]
+token = "YOUR_BOT_TOKEN"
+allow_from = "123456789" # Users allowed to control the agent, not the group ID
+topic_sync_chat_id = "-1001234567890"
+topic_sync_interval_seconds = 10
+group_reply_all = true # Optional: accept ordinary messages without @mention
+```
+
+Private topic mode in BotFather is not required for a supergroup. Before
+creating a topic, cc-connect verifies that Topics are enabled and the bot
+has the required administrator permission. Basic groups, channels, and
+supergroups without Topics are rejected.
+
+In the configured destination supergroup, each topic shares one conversation
+among users permitted by `allow_from`, regardless of `share_session_in_channel`.
+This includes messages, command buttons, and permission buttons, so another
+allowed user's reply continues the same synced conversation. Other chats
+keep their configured session-sharing behavior. Group members can see the
+mirrored conversation; `allow_from` controls who can interact with the agent.
+
+The destination is explicit: cc-connect never chooses one from incoming
+messages. Changing the ID selects a separate sync journal and a new initial
+cutoff; it does not move existing topics or copy previously linked chats.
+Switching back to a previous destination resumes its saved links and delivery
+progress. Existing DM configurations continue to work unchanged.
 
 This is opt-in and works with the Codex agent in a single-workspace project.
 Set `backend = "app_server"` under `[projects.agent.options]`; mirroring
