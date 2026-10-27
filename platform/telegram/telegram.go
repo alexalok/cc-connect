@@ -111,6 +111,7 @@ type Platform struct {
 	groupReplyAll         bool
 	shareSessionInChannel bool
 	enableReactions       bool
+	richMessages          bool
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
 	topicRouting          privateTopicRouting
@@ -174,6 +175,7 @@ func New(opts map[string]any) (core.Platform, error) {
 	groupReplyAll, _ := opts["group_reply_all"].(bool)
 	shareSessionInChannel, _ := opts["share_session_in_channel"].(bool)
 	enableReactions, _ := opts["enable_reactions"].(bool)
+	richMessages, _ := opts["rich_messages"].(bool)
 
 	// Default to "compact" so streaming edits work out of the box. Telegram has
 	// no rich card UI, so "card" is normalized to "compact". Users can opt out
@@ -201,6 +203,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		groupReplyAll:         groupReplyAll,
 		shareSessionInChannel: shareSessionInChannel,
 		enableReactions:       enableReactions,
+		richMessages:          richMessages,
 		progressStyle:         progressStyle,
 		httpClient:            httpClient,
 	}, nil
@@ -1063,6 +1066,9 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 	if err != nil {
 		return err
 	}
+	if p.richMessages {
+		return p.sendRichChunks(ctx, bot, rc, content, true, nil)
+	}
 
 	html := core.MarkdownToSimpleHTML(content)
 	params := &tgbot.SendMessageParams{
@@ -1110,6 +1116,9 @@ func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 	bot, err := p.connectedBot("send")
 	if err != nil {
 		return err
+	}
+	if p.richMessages {
+		return p.sendRichChunks(ctx, bot, rc, content, false, nil)
 	}
 
 	html := core.MarkdownToSimpleHTML(content)
@@ -1306,6 +1315,9 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 		}
 		rows = append(rows, btns)
 	}
+	if p.richMessages {
+		return p.sendRichChunks(ctx, bot, rc, content, false, &models.InlineKeyboardMarkup{InlineKeyboard: rows})
+	}
 
 	html := core.MarkdownToSimpleHTML(content)
 	params := &tgbot.SendMessageParams{
@@ -1443,6 +1455,15 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 	if err != nil {
 		return nil, err
 	}
+	if sent, handled, err := p.tryRichMessage(ctx, "sendRichMessage", richMessageParams{
+		ChatID: rc.chatID, MessageThreadID: rc.threadID,
+		RichMessage: richMessageContent{Markdown: content},
+	}); handled {
+		if err != nil {
+			return nil, err
+		}
+		return &telegramPreviewHandle{chatID: rc.chatID, threadID: rc.threadID, messageID: sent.ID}, nil
+	}
 
 	html := core.MarkdownToSimpleHTML(content)
 	params := &tgbot.SendMessageParams{
@@ -1492,6 +1513,12 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 	}
 	bot, err := p.connectedBot("update message")
 	if err != nil {
+		return err
+	}
+	if _, handled, err := p.tryRichMessage(ctx, "editMessageText", richMessageParams{
+		ChatID: h.chatID, MessageID: h.messageID,
+		RichMessage: richMessageContent{Markdown: content},
+	}); handled {
 		return err
 	}
 
