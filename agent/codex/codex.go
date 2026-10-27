@@ -52,6 +52,8 @@ type Agent struct {
 	mu              sync.RWMutex
 	messageCacheMu  sync.Mutex
 	messageCache    map[string]visibleMessageCache
+	statusCacheMu   sync.Mutex
+	statusCache     map[string]nativeStatusCache
 }
 
 var _ core.SessionWorkDirProvider = (*Agent)(nil)

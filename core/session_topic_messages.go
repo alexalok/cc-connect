@@ -62,6 +62,9 @@ func (w *sessionTopicSync) mirrorTopicMessages(ctx context.Context, id string, r
 	if err != nil {
 		return err
 	}
+	if err := w.mirrorTopicStatus(ctx, key, id, reply); err != nil {
+		slog.Warn("session topic status sync failed", "session", id, "error", err)
+	}
 	delivered := w.state.Delivered[id]
 	if delivered == nil {
 		delivered = make(map[string]int)
