@@ -62,6 +62,39 @@ func TestDeleteSessionTopic_OnlyConfiguredDestinationTopics(t *testing.T) {
 	}
 }
 
+func TestDeleteSessionTopic_ExternalArchiveProtectsSupergroupGeneralTopic(t *testing.T) {
+	p := newTelegramTestPlatform(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("General must never be removed by archive sync: %s", r.URL.Path)
+		fmt.Fprint(w, `{"ok":true,"result":true}`)
+	})
+	p.topicSyncChatID = -100123
+	if deleted, err := p.DeleteSessionTopic(context.Background(), p.buildSessionKey(-100123, 1, 123)); err != nil || deleted {
+		t.Fatalf("General topic deletion: deleted=%v, error=%v", deleted, err)
+	}
+}
+
+func TestDeleteSessionTopic_ExternalArchiveRemovesConfiguredSupergroupTopic(t *testing.T) {
+	calls := 0
+	p := newTelegramTestPlatform(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if !strings.HasSuffix(r.URL.Path, "/deleteForumTopic") {
+			t.Errorf("unexpected API: %s", r.URL.Path)
+		}
+		if err := r.ParseMultipartForm(1024); err != nil {
+			t.Fatal(err)
+		}
+		if r.FormValue("chat_id") != "-100123" || r.FormValue("message_thread_id") != "42" {
+			t.Errorf("wrong topic: %v", r.Form)
+		}
+		fmt.Fprint(w, `{"ok":true,"result":true}`)
+	})
+	p.topicSyncChatID = -100123
+	p.bot = newRateLimitRetryBot(&startupBot{telegramBot: p.bot})
+	if deleted, err := p.DeleteSessionTopic(context.Background(), p.buildSessionKey(-100123, 42, 123)); err != nil || !deleted || calls != 1 {
+		t.Fatalf("supergroup topic deletion: deleted=%v, calls=%d, error=%v", deleted, calls, err)
+	}
+}
+
 func TestDeleteSessionTopic_AlreadyDeletedIsIdempotentAndErrorsAreRedacted(t *testing.T) {
 	for _, tc := range []struct {
 		response string

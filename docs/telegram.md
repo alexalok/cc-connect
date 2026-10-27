@@ -362,6 +362,7 @@ finishes; topics reused with `/new` or `/switch` are only removed if their
 currently selected conversation is archived. Failed Telegram deletions retry
 on later polls, including after restarts. Successful deletions are remembered;
 unarchiving a chat does not recreate its removed topic.
+The General topic of a supergroup is never removed by archive sync.
 
 Keep the session files and their `.topic-sync-*.json` companions together
 when backing up or moving the bot. A malformed sync file stops startup
