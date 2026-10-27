@@ -60,6 +60,19 @@ type SessionDiscoverer interface {
 	DiscoverSessions(ctx context.Context, since time.Time) ([]AgentSessionInfo, error)
 }
 
+// SessionArchiveSource reports positively archived IDs among known sessions.
+// Missing sessions and incomplete reads must never be interpreted as archives.
+type SessionArchiveSource interface {
+	ArchivedSessionIDs(ctx context.Context, sessionIDs []string) ([]string, error)
+}
+
+// SessionTopicDeleter removes a topic in the platform's configured sync target,
+// including its messages. It returns false for keys outside that target or
+// without a topic, and treats already deleted topics as successful cleanup.
+type SessionTopicDeleter interface {
+	DeleteSessionTopic(ctx context.Context, sessionKey string) (bool, error)
+}
+
 // SessionMessage is a completed, user-visible message from a native chat.
 // ID must be stable across reads/restarts and distinct for repeated messages.
 type SessionMessage struct {
