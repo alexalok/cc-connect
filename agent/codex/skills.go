@@ -8,9 +8,35 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/chenhg5/cc-connect/core"
 )
+
+var _ core.SkillInvocationFormatter = (*Agent)(nil)
+var _ core.SkillInvocationSender = (*appServerSession)(nil)
+
+// FormatSkillInvocation uses the canonical catalog name, including plugin
+// namespaces. Both exec and app-server let Codex load the skill itself.
+func (a *Agent) FormatSkillInvocation(skill *core.Skill, args []string) string {
+	prompt := "$" + skill.Name
+	if len(args) > 0 {
+		prompt += " " + strings.Join(args, " ")
+	}
+	return prompt
+}
+
+// SendSkill binds the native mention to the file selected from skills/list,
+// matching the explicit skill input used by Codex clients.
+func (s *appServerSession) SendSkill(prompt, messageID string, images []core.ImageAttachment, files []core.FileAttachment, skill *core.Skill, onDelivered func()) error {
+	if err := s.send(prompt, messageID, images, files, skill); err != nil {
+		return err
+	}
+	if onDelivered != nil {
+		onDelivered()
+	}
+	return nil
+}
 
 // ListSkills asks the same CLI that executes turns for its enabled catalog.
 // No thread or model turn is created. In particular, cached plugin packages

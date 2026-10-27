@@ -641,6 +641,19 @@ type SkillCatalogProvider interface {
 	ListSkills(ctx context.Context) ([]*Skill, error)
 }
 
+// SkillInvocationFormatter opts an agent into native skill invocation syntax.
+// The returned prompt replaces full instruction expansion, including in history.
+type SkillInvocationFormatter interface {
+	FormatSkillInvocation(skill *Skill, args []string) string
+}
+
+// SkillInvocationSender lets a session carry the resolved skill alongside its
+// formatted prompt. Sessions whose native syntax needs only text can use Send.
+// onDelivered, when non-nil, must run only after the agent acknowledges the turn.
+type SkillInvocationSender interface {
+	SendSkill(prompt, messageID string, images []ImageAttachment, files []FileAttachment, skill *Skill, onDelivered func()) error
+}
+
 // SessionDeleter is an optional interface for agents that support deleting sessions.
 type SessionDeleter interface {
 	DeleteSession(ctx context.Context, sessionID string) error

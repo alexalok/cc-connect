@@ -471,6 +471,10 @@ func (s *appServerSession) storeContextUsage(usage *core.ContextUsage) {
 }
 
 func (s *appServerSession) Send(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment) error {
+	return s.send(prompt, messageID, images, files, nil)
+}
+
+func (s *appServerSession) send(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment, skill *core.Skill) error {
 	if !s.alive.Load() {
 		return fmt.Errorf("session is closed")
 	}
@@ -507,6 +511,13 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 		input = append(input, map[string]any{
 			"type": "localImage",
 			"path": path,
+		})
+	}
+	if skill != nil {
+		input = append(input, map[string]any{
+			"type": "skill",
+			"name": skill.Name,
+			"path": filepath.Join(skill.Source, "SKILL.md"),
 		})
 	}
 

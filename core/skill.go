@@ -311,3 +311,26 @@ func BuildSkillInvocationPrompt(skill *Skill, args []string) string {
 	sb.WriteString("\n\nPlease follow the skill instructions above to complete the task.")
 	return sb.String()
 }
+
+// prepareSkillMessage preserves the selected skill for native transports while
+// retaining instruction expansion for agents without native invocation syntax.
+func prepareSkillMessage(agent Agent, msg *Message, skill *Skill, args []string) {
+	msg.nativeSkill = nil
+	if formatter, ok := agent.(SkillInvocationFormatter); ok {
+		msg.Content = formatter.FormatSkillInvocation(skill, args)
+		msg.nativeSkill = skill
+		return
+	}
+	msg.Content = BuildSkillInvocationPrompt(skill, args)
+}
+
+func sendSkillMessage(session AgentSession, prompt string, msg *Message) error {
+	if sender, ok := session.(SkillInvocationSender); ok && msg.nativeSkill != nil {
+		onDelivered := msg.OnDelivered
+		if onDelivered != nil {
+			onDelivered = sync.OnceFunc(onDelivered)
+		}
+		return sender.SendSkill(prompt, msg.MessageID, msg.Images, msg.Files, msg.nativeSkill, onDelivered)
+	}
+	return sendAgentMessage(session, prompt, msg.MessageID, msg.Images, msg.Files, msg.OnDelivered)
+}
