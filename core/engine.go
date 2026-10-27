@@ -4070,6 +4070,21 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 		return
 	}
 
+	// Start typing indicator if platform supports it.
+	// Ownership is transferred to processInteractiveEvents which manages
+	// stopping/restarting it across queued message turns.
+	var stopTyping func()
+	if ti, ok := p.(TypingIndicator); ok {
+		stopTyping = ti.StartTyping(e.ctx, msg.ReplyCtx)
+	}
+	defer func() {
+		// Stop typing if ownership was NOT transferred to processInteractiveEvents
+		// (i.e. an early return before that call).
+		if stopTyping != nil {
+			stopTyping()
+		}
+	}()
+
 	turnStart := time.Now()
 
 	e.i18n.DetectAndSet(msg.Content)
@@ -4112,6 +4127,10 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	defer stopRecallMonitor()
 
 	if state.agentSession == nil {
+		if stopTyping != nil {
+			stopTyping()
+			stopTyping = nil
+		}
 		failureMsg := state.startFailureMsg
 		if failureMsg == "" {
 			failureMsg = MsgFailedToStartAgentSession
@@ -4147,21 +4166,6 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 			}
 		}
 	}
-
-	// Start typing indicator if platform supports it.
-	// Ownership is transferred to processInteractiveEvents which manages
-	// stopping/restarting it across queued message turns.
-	var stopTyping func()
-	if ti, ok := p.(TypingIndicator); ok {
-		stopTyping = ti.StartTyping(e.ctx, msg.ReplyCtx)
-	}
-	defer func() {
-		// Stop typing if ownership was NOT transferred to processInteractiveEvents
-		// (i.e. an early return before that call).
-		if stopTyping != nil {
-			stopTyping()
-		}
-	}()
 
 	// Stop the unsolicited reader (if running) and hand off event channel
 	// ownership to this foreground turn. Only drain events when the previous
@@ -5500,13 +5504,17 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	// stopTyping tracks the current turn's typing indicator so it can be
 	// stopped when a queued message starts a new turn.
 	stopTyping := stopTypingFn
+	finishTyping := func() {
+		if stopTyping != nil {
+			stopTyping()
+			stopTyping = nil
+		}
+	}
 	// doneReaction stores a function to add a "done" emoji after stopTyping.
 	// Set during EventResult handling for multi-round quiet turns.
 	var doneReaction func()
 	defer func() {
-		if stopTyping != nil {
-			stopTyping()
-		}
+		finishTyping()
 		if doneReaction != nil {
 			doneReaction()
 		}
@@ -5594,10 +5602,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			if err != nil {
 				slog.Error("failed to send prompt", "error", err, "session_key", sessionKey)
 				sp.discard()
-				if stopTyping != nil {
-					stopTyping()
-					stopTyping = nil
-				}
+				finishTyping()
 				e.notifyDroppedQueuedMessages(state, err)
 				if state.agentSession == nil || !state.agentSession.Alive() {
 					e.cleanupInteractiveState(sessionKey, state)
@@ -5610,6 +5615,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 			continue
 		case <-idleCh:
+			finishTyping()
 			slog.Error("agent session idle timeout: no events for too long, killing session",
 				"session_key", sessionKey, "timeout", e.eventIdleTimeout, "elapsed", time.Since(turnStart))
 			cp.Finalize(ProgressCardStateFailed)
@@ -5622,6 +5628,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			e.cleanupInteractiveState(sessionKey, state)
 			return
 		case <-turnDeadlineCh:
+			finishTyping()
 			elapsed := time.Since(turnStart)
 			slog.Warn("agent turn exceeded max_turn_time: sending stop signal, will force-kill if needed",
 				"session_key", sessionKey, "max_turn_time", e.maxTurnTime, "elapsed", elapsed)
@@ -6260,6 +6267,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				)
 				continue
 			}
+			// Stop before the final send, so it clears typing without refreshing it.
+			finishTyping()
 			cp.Finalize(ProgressCardStateCompleted)
 			// Use state.agentSession.CurrentSessionID() instead of event.SessionID.
 			// event.SessionID may be empty in some cases, causing the agent_session_id
@@ -6709,11 +6718,6 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				state.currentTurnUserMessageTimeMs = queued.userMessageTimeMs
 				state.mu.Unlock()
 
-				// Stop the previous turn's typing indicator
-				if stopTyping != nil {
-					stopTyping()
-					stopTyping = nil
-				}
 				// Start a new typing indicator for the queued message's context
 				if ti, ok := queued.platform.(TypingIndicator); ok {
 					stopTyping = ti.StartTyping(e.ctx, queued.replyCtx)
@@ -6846,6 +6850,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			return
 
 		case EventError:
+			finishTyping()
 			cp.Finalize(ProgressCardStateFailed)
 			sp.discard()
 			// A backend can create its resumable session before a turn fails
@@ -6898,6 +6903,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	}
 
 channelClosed:
+	finishTyping()
 	// Channel closed - process exited unexpectedly
 	slog.Warn("agent process exited", "session_key", sessionKey)
 	state.mu.Lock()
