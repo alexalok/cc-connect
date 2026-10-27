@@ -3175,6 +3175,39 @@ func TestCUJ_H4_FeishuTopicsKeepWorkspaceBindingsIsolated(t *testing.T) {
 
 // Lists and invocation must agree across groups, including after rebinding.
 func TestCUJ_H5_WorkspaceSkillDiscoveryAndInvocation(t *testing.T) {
+	t.Run("NativeInvocationKeepsHistoryCompact", func(t *testing.T) {
+		p := &stubPlatformEngine{n: "telegram"}
+		e, a := newNativeSkillEngine(t, p)
+		key := skillMessage(p.Name(), "a", "").SessionKey
+		env := &cujEnv{t: t, engine: e, plat: p}
+		send := func(content string) { e.ReceiveMessage(p, skillMessage(p.Name(), "a", content)) }
+		waitForReply := func(want string) {
+			t.Helper()
+			env.waitFor(want, 3*time.Second, func() bool {
+				return strings.Contains(strings.Join(p.getSent(), "\n"), want) && !e.sessions.GetOrCreateActive(key).Busy()
+			})
+		}
+
+		send("/skills")
+		if got := strings.Join(p.getSent(), "\n"); !strings.Contains(got, "/review_code") {
+			t.Fatalf("skill missing from Telegram list: %s", got)
+		}
+		send("/review_code reviewer")
+		waitForReply("native: invoke:review-code reviewer from " + a.skill.Source)
+		send("ordinary follow-up")
+		waitForReply("plain: ordinary follow-up")
+		p.clearSent()
+		send("/history")
+		visible := strings.Join(p.getSent(), "\n")
+		for _, want := range []string{"invoke:review-code reviewer", "ordinary follow-up"} {
+			if !strings.Contains(visible, want) {
+				t.Errorf("history %q missing %q", visible, want)
+			}
+		}
+		if strings.Contains(visible, a.skill.Prompt) || strings.Contains(visible, "Skill Instructions:") {
+			t.Fatalf("full skill instructions leaked into history: %s", visible)
+		}
+	})
 	t.Run("EnabledCatalogExcludesUnselectedSkills", func(t *testing.T) {
 		p := &stubPlatformEngine{n: "feishu"}
 		e, a := newCatalogSkillsEngine(t, p)
