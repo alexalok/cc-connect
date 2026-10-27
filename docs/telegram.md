@@ -147,6 +147,31 @@ Notes:
 - Leave `proxy_username` and `proxy_password` empty when the proxy does not require authentication.
 - The proxy only affects Telegram Bot API requests for this Telegram platform instance.
 
+### 2.2 Rich Message Formatting
+
+Enable Telegram's [rich messages](https://core.telegram.org/bots/api#rich-message-formatting-options)
+to preserve Markdown tables, headings, task lists, formulas, and collapsible sections:
+
+```toml
+[projects.platforms.options]
+rich_messages = true
+```
+
+Add this option to the existing Telegram options section. It defaults to `false`.
+Rich formatting applies to outgoing replies, mirrored conversation text, messages
+with buttons, and live preview edits. Topic routing and reply references are retained.
+The agent's Markdown goes directly to Telegram's Rich Markdown parser; do not escape
+it as MarkdownV2. This requires Bot API 10.1 or later and a compatible Telegram client.
+
+The adapter splits rich messages above 32,768 characters, although the engine may
+split replies into smaller messages before they reach the adapter. An explicit
+formatting rejection or an unavailable rich-message endpoint falls back to regular
+formatting. Rate limits respect `retry_after`; network and server errors are returned
+without resending as regular messages to avoid duplicate delivery.
+
+This option changes outgoing formatting only; it does not add support for receiving
+rich-message content or use Telegram's ephemeral draft API.
+
 ---
 
 ## Step 3: Get Chat ID (Optional)
