@@ -174,6 +174,16 @@ All agents support permission modes switchable at runtime via `/mode`.
 | Full Auto | `full-auto` | Auto-approve with sandbox |
 | YOLO | `yolo` | Bypass all approvals and sandbox |
 
+### Codex skill commands
+
+Skill slash commands invoke Codex skills natively. For example, `/pr_loop codex`
+sends `$pr-loop codex` and lets Codex load the selected skill. The `app_server`
+backend also includes the skill's name and file path as an explicit skill input,
+as in the Codex TUI. The `exec` backend uses the `$skill-name` text syntax.
+The full skill instructions are no longer pasted into the user message or
+CC-Connect's `/history`. Other agents retain instruction expansion unless they
+provide their own native invocation support.
+
 ### Codex CLI discovery on macOS
 
 The Codex adapter resolves its executable in this order:

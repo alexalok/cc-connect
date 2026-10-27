@@ -416,6 +416,7 @@ type Message struct {
 	UserName     string
 	ChatName     string // human-readable chat/group name (optional)
 	Content      string
+	nativeSkill  *Skill              // resolved skill selection; internal, never parsed from message text
 	Images       []ImageAttachment   // attached images (if any)
 	Files        []FileAttachment    // attached files (if any)
 	Audio        *AudioAttachment    // voice message (if any)
