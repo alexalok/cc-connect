@@ -190,7 +190,7 @@ func TestCreateSessionTopic_SupergroupMessagesCallbacksAndMirrorsShareTopic(t *t
 			if err != nil {
 				t.Fatal(err)
 			}
-			if key != "telegram:-100123:42" || len(bot.created) != 1 || bot.created[0].ChatID != int64(-100123) {
+			if key != "telegram:-100123:42:0" || len(bot.created) != 1 || bot.created[0].ChatID != int64(-100123) {
 				t.Fatalf("wrong supergroup topic: key=%s creates=%+v", key, bot.created)
 			}
 			if len(bot.memberQueries) != 1 || bot.memberQueries[0].ChatID != int64(-100123) || bot.memberQueries[0].UserID != 99 {
@@ -237,7 +237,7 @@ func TestTopicSyncGroupSharingDoesNotChangeOtherChats(t *testing.T) {
 		thread int
 		want   string
 	}{
-		{-100123, 42, "telegram:-100123:42"},
+		{-100123, 42, "telegram:-100123:42:0"},
 		{-100123, 0, "telegram:-100123"},
 		{-100456, 42, "telegram:-100456:42:123"},
 		{-100456, 0, "telegram:-100456:123"},
@@ -330,7 +330,7 @@ func TestCreateSessionTopic_SupergroupProductionWrappersForwardAndRetry(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if key != "telegram:-100123:42" || calls["getChat"] != 2 || calls["getChatMember"] != 2 || calls["createForumTopic"] != 2 || len(*slept) != 3 {
+	if key != "telegram:-100123:42:0" || calls["getChat"] != 2 || calls["getChatMember"] != 2 || calls["createForumTopic"] != 2 || len(*slept) != 3 {
 		t.Fatalf("key=%q calls=%v sleeps=%v", key, calls, *slept)
 	}
 	rctx, err := p.ReconstructReplyCtx(key)
@@ -342,5 +342,31 @@ func TestCreateSessionTopic_SupergroupProductionWrappersForwardAndRetry(t *testi
 	}
 	if calls["sendMessage"] != 1 {
 		t.Fatalf("mirrored message not sent: %v", calls)
+	}
+}
+
+func TestReconstructReplyCtx_SyncedSupergroupSurvivesDestinationChanges(t *testing.T) {
+	for _, originallyShared := range []bool{false, true} {
+		original := &Platform{topicSyncChatID: -100123, shareSessionInChannel: originallyShared}
+		key := original.buildSessionKey(-100123, 42, 123)
+		for _, destination := range []int64{0, 123, -100456} {
+			for _, shared := range []bool{false, true} {
+				restarted := &Platform{topicSyncChatID: destination, shareSessionInChannel: shared}
+				ctx, err := restarted.ReconstructReplyCtx(key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rc := ctx.(replyContext)
+				if rc.chatID != -100123 || rc.threadID != 42 {
+					t.Fatalf("saved destination %s changed after config update: %+v", key, rc)
+				}
+			}
+		}
+	}
+	// Enabling sync must not reinterpret an older per-user General-topic key.
+	p := &Platform{topicSyncChatID: -100123}
+	ctx, err := p.ReconstructReplyCtx("telegram:-100123:123")
+	if err != nil || ctx.(replyContext).threadID != 0 {
+		t.Fatalf("old General-topic destination was reinterpreted: %+v, %v", ctx, err)
 	}
 }
