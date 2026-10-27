@@ -660,6 +660,11 @@ func (p *Platform) reactToMessage(ctx context.Context, chatID int64, messageID i
 }
 
 func (p *Platform) buildSessionKey(chatID int64, threadID int, userID int64) string {
+	if p.topicSyncChatID < 0 && chatID == p.topicSyncChatID && threadID != 0 {
+		// Keep persisted topic destinations unambiguous even after sync moves
+		// elsewhere. Zero is a shared-user sentinel, never a Telegram user ID.
+		return fmt.Sprintf("telegram:%d:%d:0", chatID, threadID)
+	}
 	if p.sharedSessionForChat(chatID) {
 		if threadID != 0 {
 			return fmt.Sprintf("telegram:%d:%d", chatID, threadID)
@@ -1421,7 +1426,7 @@ func (p *Platform) ReconstructReplyCtx(sessionKey string) (any, error) {
 	case 2:
 		// telegram:{chatID}
 	case 3:
-		if p.sharedSessionForChat(chatID) {
+		if p.shareSessionInChannel {
 			// telegram:{chatID}:{threadID}
 			threadID, err = strconv.Atoi(parts[2])
 			if err != nil {
