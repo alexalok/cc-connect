@@ -694,7 +694,7 @@ func (p *Platform) reactToMessage(ctx context.Context, chatID int64, messageID i
 }
 
 func (p *Platform) buildSessionKey(chatID int64, threadID int, userID int64) string {
-	if p.shareSessionInChannel {
+	if p.sharedSessionForChat(chatID) {
 		if threadID != 0 {
 			return fmt.Sprintf("telegram:%d:%d", chatID, threadID)
 		}
@@ -704,6 +704,12 @@ func (p *Platform) buildSessionKey(chatID int64, threadID int, userID int64) str
 		return fmt.Sprintf("telegram:%d:%d:%d", chatID, threadID, userID)
 	}
 	return fmt.Sprintf("telegram:%d:%d", chatID, userID)
+}
+
+func (p *Platform) sharedSessionForChat(chatID int64) bool {
+	// A synced group topic represents one native conversation, regardless of
+	// which allowed user replies. Keep other chats' configured session policy.
+	return p.shareSessionInChannel || (p.topicSyncChatID < 0 && chatID == p.topicSyncChatID)
 }
 
 func buildChannelKey(chatID int64, threadID int) string {
@@ -1473,7 +1479,7 @@ func (p *Platform) ReconstructReplyCtx(sessionKey string) (any, error) {
 	case 2:
 		// telegram:{chatID}
 	case 3:
-		if p.shareSessionInChannel {
+		if p.sharedSessionForChat(chatID) {
 			// telegram:{chatID}:{threadID}
 			threadID, err = strconv.Atoi(parts[2])
 			if err != nil {
