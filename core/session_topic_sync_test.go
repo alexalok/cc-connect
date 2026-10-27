@@ -34,6 +34,7 @@ type topicSyncPlatform struct {
 	created     chan string
 	release     <-chan struct{}
 	afterCreate func()
+	keyPrefix   string
 }
 
 func (p *topicSyncPlatform) SessionTopicSyncConfig() (string, time.Duration) {
@@ -46,6 +47,9 @@ func (p *topicSyncPlatform) CreateSessionTopic(_ context.Context, title string) 
 		return "", p.err
 	}
 	key := fmt.Sprintf("test:owner:topic%d", len(p.keys)+1)
+	if p.keyPrefix != "" {
+		key = fmt.Sprintf("%s%d", p.keyPrefix, len(p.keys)+1)
+	}
 	p.keys = append(p.keys, key)
 	p.sent = append(p.sent, "topic: "+title)
 	p.mu.Unlock()
@@ -123,6 +127,44 @@ func TestSessionTopicSync_PersistsCutoffAndLinksAcrossRestarts(t *testing.T) {
 	}
 	if len(p.keys) != 2 {
 		t.Fatal("missed chat created during downtime")
+	}
+}
+
+func TestSessionTopicSync_DestinationChangesKeepSeparateJournals(t *testing.T) {
+	a := &topicDiscoveryAgent{infos: []AgentSessionInfo{{ID: "dm-chat", Summary: "DM conversation"}}}
+	dm := &topicSyncPlatform{target: "123", keyPrefix: "test:123:"}
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	e, first := newTopicSyncTest(t, a, dm, path)
+	if err := first.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	a.infos = append(a.infos, AgentSessionInfo{ID: "group-chat", Summary: "Group conversation"})
+	group := &topicSyncPlatform{target: "-100123", keyPrefix: "test:-100123:"}
+	e2, second := newTopicSyncTest(t, a, group, path)
+	if first.path == second.path || len(second.state.Topics) != 0 {
+		t.Fatal("destination change reused the previous destination's journal")
+	}
+	if err := second.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(group.keys) != 1 || second.state.Topics["group-chat"] == "" || second.state.Topics["dm-chat"] != "" {
+		t.Fatalf("destination change moved existing chats: %+v", second.state.Topics)
+	}
+	if err := e2.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	_, restored := newTopicSyncTest(t, a, dm, path)
+	if restored.path != first.path || !restored.state.Since.Equal(first.state.Since) || restored.state.Topics["dm-chat"] != dm.keys[0] {
+		t.Fatal("returning to the DM destination lost its original cutoff or link")
+	}
+	if err := restored.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(dm.keys) != 1 {
+		t.Fatal("returning to the DM destination duplicated a linked chat")
 	}
 }
 
