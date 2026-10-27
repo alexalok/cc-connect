@@ -25,9 +25,35 @@ type ConversationStatusSetter interface {
 // An unanswered question outlives a completed turn; background progress must not
 // make it disappear. Failures and explicit stops override outstanding requests.
 func (e *Engine) updateConversationStatus(state *interactiveState, status ConversationStatus) {
+	e.publishConversationStatus(state, status, nil, 0)
+}
+
+// A stopped reader may still be unwinding a slow platform send after another
+// turn starts. Validate both the state and busy-lock generation, keeping their
+// locks until the status is enqueued so replacement cannot race publication.
+func (e *Engine) updateConversationStatusForTurn(state *interactiveState, session *Session, key string, gen uint64, status ConversationStatus) {
+	e.interactiveMu.Lock()
+	defer e.interactiveMu.Unlock()
+	if current := e.interactiveStates[key]; current != nil && current != state {
+		return
+	}
+	e.publishConversationStatus(state, status, session, gen)
+}
+
+func (e *Engine) publishConversationStatus(state *interactiveState, status ConversationStatus, session *Session, gen uint64) {
 	state.statusMu.Lock()
 	defer state.statusMu.Unlock()
 	state.mu.Lock()
+	// Match the existing state.mu -> session.mu order used by queue draining.
+	// Generation zero is the legacy escape hatch used by direct event tests.
+	if session != nil && gen != 0 {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		if session.lockGen != gen {
+			state.mu.Unlock()
+			return
+		}
+	}
 	if status != "" && (state.conversationStatus != ConversationStopped || status == ConversationWorking) {
 		state.conversationStatus = status
 	}
