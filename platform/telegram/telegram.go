@@ -133,6 +133,7 @@ type Platform struct {
 	newBot              botFactory
 	newBackoffTimer     func(time.Duration) backoffTimer
 	newTypingTicker     func(time.Duration) typingTicker
+	typing              map[*typingSession]struct{} // protected by mu
 }
 
 const (
@@ -1064,6 +1065,8 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 		return err
 	}
 
+	defer p.refreshTyping(rc)
+
 	html := core.MarkdownToSimpleHTML(content)
 	params := &tgbot.SendMessageParams{
 		ChatID:          rc.chatID,
@@ -1112,6 +1115,8 @@ func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 		return err
 	}
 
+	defer p.refreshTyping(rc)
+
 	html := core.MarkdownToSimpleHTML(content)
 	params := &tgbot.SendMessageParams{
 		ChatID:          rc.chatID,
@@ -1158,6 +1163,8 @@ func (p *Platform) SendImage(ctx context.Context, rctx any, img core.ImageAttach
 		return err
 	}
 
+	defer p.refreshTyping(rc)
+
 	name := img.FileName
 	if name == "" {
 		name = "image"
@@ -1183,6 +1190,8 @@ func (p *Platform) SendFile(ctx context.Context, rctx any, file core.FileAttachm
 	if err != nil {
 		return err
 	}
+
+	defer p.refreshTyping(rc)
 
 	name := file.FileName
 	if name == "" {
@@ -1249,6 +1258,8 @@ func (p *Platform) sendVoice(ctx context.Context, rc replyContext, audio []byte,
 	if err != nil {
 		return err
 	}
+	defer p.refreshTyping(rc)
+
 	params := &tgbot.SendVoiceParams{
 		ChatID:          rc.chatID,
 		MessageThreadID: rc.threadID,
@@ -1265,6 +1276,8 @@ func (p *Platform) sendAudio(ctx context.Context, rc replyContext, audio []byte,
 	if err != nil {
 		return err
 	}
+	defer p.refreshTyping(rc)
+
 	params := &tgbot.SendAudioParams{
 		ChatID:          rc.chatID,
 		MessageThreadID: rc.threadID,
@@ -1297,6 +1310,8 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 	if err != nil {
 		return err
 	}
+
+	defer p.refreshTyping(rc)
 
 	var rows [][]models.InlineKeyboardButton
 	for _, row := range buttons {
@@ -1444,6 +1459,8 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 		return nil, err
 	}
 
+	defer p.refreshTyping(rc)
+
 	html := core.MarkdownToSimpleHTML(content)
 	params := &tgbot.SendMessageParams{
 		ChatID:          rc.chatID,
@@ -1494,6 +1511,8 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 	if err != nil {
 		return err
 	}
+
+	defer p.refreshTyping(replyContext{chatID: h.chatID, threadID: h.threadID})
 
 	html := core.MarkdownToSimpleHTML(content)
 	slog.Debug("telegram: UpdateMessage",
@@ -1567,6 +1586,7 @@ func (p *Platform) sendChunked(ctx context.Context, bot telegramBot, rc replyCon
 				return fmt.Errorf("telegram: send chunk %d: %w", i, err)
 			}
 		}
+		p.refreshTyping(rc)
 	}
 	return nil
 }
@@ -1598,56 +1618,9 @@ func (p *Platform) sendChunkedWithButtons(ctx context.Context, bot telegramBot, 
 				return fmt.Errorf("telegram: send chunk %d: %w", i, err)
 			}
 		}
+		p.refreshTyping(rc)
 	}
 	return nil
-}
-
-// StartTyping sends a "typing…" chat action and repeats every 5 seconds
-// until the returned stop function is called.
-func (p *Platform) StartTyping(ctx context.Context, rctx any) (stop func()) {
-	rc, ok := rctx.(replyContext)
-	if !ok {
-		return func() {}
-	}
-
-	params := &tgbot.SendChatActionParams{
-		ChatID:          rc.chatID,
-		MessageThreadID: rc.threadID,
-		Action:          models.ChatActionTyping,
-	}
-
-	if bot, err := p.connectedBot("typing"); err == nil {
-		if _, err := bot.SendChatAction(ctx, params); err != nil {
-			slog.Debug("telegram: initial typing send failed", "error", err)
-		}
-	} else {
-		return func() {}
-	}
-
-	done := make(chan struct{})
-	go func() {
-		ticker := p.newTypingTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ctx.Done():
-				return
-			case <-ticker.C():
-				bot, err := p.connectedBot("typing")
-				if err != nil {
-					slog.Debug("telegram: typing stopped", "error", err)
-					return
-				}
-				if _, err := bot.SendChatAction(ctx, params); err != nil {
-					slog.Debug("telegram: typing send failed", "error", err)
-				}
-			}
-		}
-	}()
-
-	return func() { close(done) }
 }
 
 func truncateForLog(s string, maxLen int) string {
@@ -1687,6 +1660,9 @@ func (p *Platform) Stop() error {
 		return nil
 	}
 	p.stopping = true
+	for s := range p.typing {
+		s.cancel()
+	}
 	cancel := p.cancel
 	p.cancel = nil
 	p.bot = nil
