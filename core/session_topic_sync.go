@@ -21,6 +21,10 @@ type sessionTopicSyncState struct {
 	// Successful chunks per message; old topic-only journals start empty and
 	// catch up their linked chats without changing the new-chat cutoff.
 	Delivered map[string]map[string]int `json:"delivered,omitempty"`
+	// Successful archive cleanup, keyed by topic, including bot-created topics.
+	// Keep these tombstones and the original links so recovery cannot recreate
+	// a removed topic or bind it back to an archived conversation.
+	DeletedTopics map[string]string `json:"deleted_topics,omitempty"`
 }
 
 // A worker owns its state and runs one poll at a time. The engine cancels and
@@ -35,6 +39,7 @@ type sessionTopicSync struct {
 	messages SessionMessageSource
 	platform Platform
 	replies  ReplyContextReconstructor
+	archived map[string]bool // positively archived IDs from this poll
 }
 
 func (e *Engine) prepareSessionTopicSync() ([]*sessionTopicSync, error) {
@@ -79,7 +84,9 @@ func (e *Engine) prepareSessionTopicSync() ([]*sessionTopicSync, error) {
 		// Restore links before accepting messages, including recovery when the
 		// topic journal was saved but the regular session snapshot was not.
 		for id, sessionKey := range worker.state.Topics {
-			worker.bind(sessionKey, id, "")
+			if worker.state.DeletedTopics[sessionKey] == "" {
+				worker.bind(sessionKey, id, "")
+			}
 		}
 		workers = append(workers, worker)
 	}
@@ -104,6 +111,11 @@ func (w *sessionTopicSync) load() error {
 	for id, key := range w.state.Topics {
 		if id == "" || key == "" {
 			return fmt.Errorf("session topic sync: invalid saved topic link in %s", w.path)
+		}
+	}
+	for key, id := range w.state.DeletedTopics {
+		if key == "" || id == "" {
+			return fmt.Errorf("session topic sync: invalid deleted topic link")
 		}
 	}
 	for id, messages := range w.state.Delivered {
@@ -154,8 +166,14 @@ func (w *sessionTopicSync) poll(ctx context.Context) error {
 	if err := w.save(); err != nil {
 		return err
 	}
-	sessions, err := w.source.DiscoverSessions(ctx, w.state.Since)
 	var failures []error
+	if err := w.removeArchivedTopics(ctx); err != nil {
+		if errors.Is(err, errSessionTopicSyncPersistence) {
+			return err
+		}
+		failures = append(failures, err)
+	}
+	sessions, err := w.source.DiscoverSessions(ctx, w.state.Since)
 	if err != nil {
 		failures = append(failures, fmt.Errorf("session topic sync: discover: %w", err))
 		sessions = nil
@@ -164,7 +182,7 @@ func (w *sessionTopicSync) poll(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
 		}
-		if info.ID == "" || w.state.Topics[info.ID] != "" {
+		if info.ID == "" || w.state.Topics[info.ID] != "" || w.archived[info.ID] || w.removedSessionTopic(info.ID) {
 			continue
 		}
 		// Recheck for every creation: the bot may have started a session while

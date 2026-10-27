@@ -42,7 +42,7 @@ func (w *sessionTopicSync) mirrorMessages(ctx context.Context) error {
 }
 
 func (w *sessionTopicSync) topicStillSelected(key, id string) bool {
-	if w.engine.sessions.agentSessionDeleted(id) {
+	if w.archived[id] || w.state.DeletedTopics[key] != "" || w.engine.sessions.agentSessionDeleted(id) {
 		return false
 	}
 	session := w.engine.sessions.FindByID(w.engine.sessions.ActiveSessionID(key))
