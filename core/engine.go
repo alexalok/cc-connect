@@ -5477,7 +5477,12 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	}
 	updateStatus(ConversationWorking)
 	status := ConversationFailed
-	defer func() { updateStatus(status) }()
+	finalizeStatus := true
+	defer func() {
+		if finalizeStatus {
+			updateStatus(status)
+		}
+	}()
 	if msgID != "" {
 		state.mu.Lock()
 		state.currentMessageID = msgID
@@ -6684,9 +6689,12 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					}
 					e.send(state.platform, state.replyCtx, compressNotice)
 
-					// Run compress inline while the session is still locked.
+					// This request is finished. Compression may drain queued turns
+					// using this same lock generation; let those readers own the
+					// subsequent status instead of overwriting it on our return.
+					updateStatus(ConversationFinished)
+					finalizeStatus = false
 					e.runCompress(state, session, sessions, sessionKey, state.platform, state.replyCtx, true, lockGen)
-					status = ConversationFinished
 					return
 				}
 			}

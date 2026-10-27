@@ -239,3 +239,64 @@ func TestConversationStatus_RejectsSupersededStateAndGeneration(t *testing.T) {
 		})
 	}
 }
+
+type statusCompressSession struct {
+	*queuingAgentSession
+	outcome ConversationStatus
+}
+
+func (s *statusCompressSession) Send(prompt, messageID string, images []ImageAttachment, files []FileAttachment) error {
+	if err := s.queuingAgentSession.Send(prompt, messageID, images, files); err != nil {
+		return err
+	}
+	if prompt == "/compact" {
+		s.events <- Event{Type: EventResult, Done: true}
+	} else if s.outcome == ConversationFailed {
+		s.events <- Event{Type: EventError, Error: errors.New("queued request failed")}
+	} else {
+		if s.outcome == ConversationQuestion {
+			s.events <- Event{Type: EventUserInputRequest, RequestID: "queued-question", Questions: testQuestions()}
+		}
+		s.events <- Event{Type: EventResult, Content: "queued result", Done: true}
+	}
+	return nil
+}
+
+func TestConversationStatus_AutoCompressPreservesQueuedOutcome(t *testing.T) {
+	for _, outcome := range []ConversationStatus{ConversationFailed, ConversationQuestion, ConversationFinished, ""} {
+		t.Run(string(outcome), func(t *testing.T) {
+			p := &statusPlatform{stubPlatformEngine: stubPlatformEngine{n: "status"}}
+			agentSession := &statusCompressSession{queuingAgentSession: newQueuingSession("compress-status"), outcome: outcome}
+			agentSession.contextUsage = &ContextUsage{UsedTokens: 50_000, ContextWindow: 200_000}
+			e := NewEngine("test", &stubCompressorAgent{cmd: "/compact"}, []Platform{p}, "", LangEnglish)
+			t.Cleanup(func() { _ = e.Stop() })
+			e.SetAutoCompressConfig(true, 4, 0)
+			key := "status:user"
+			session := e.sessions.GetOrCreateActive(key)
+			gen, _ := session.TryLock()
+			state := &interactiveState{agentSession: agentSession, platform: p, replyCtx: "topic", busySession: session}
+			if outcome != "" {
+				state.pendingMessages = []queuedMessage{{platform: p, replyCtx: "topic", content: "queued request"}}
+			}
+			e.interactiveStates[key] = state
+			agentSession.events <- Event{Type: EventResult, Content: "original result", Done: true}
+			e.processInteractiveEvents(state, session, e.sessions, key, "original", time.Now(), nil, nil, "topic", gen)
+			want := outcome
+			if want == "" {
+				want = ConversationFinished
+			}
+			if got := p.lastStatus(); got != want {
+				t.Fatalf("outer completion replaced queued outcome: got %s, want %s", got, want)
+			}
+			agentSession.sendMu.Lock()
+			defer agentSession.sendMu.Unlock()
+			wantCalls := 2
+			if outcome == "" {
+				wantCalls = 1
+			}
+			if len(agentSession.sendCalls) != wantCalls || agentSession.sendCalls[0] != "/compact" {
+				t.Fatalf("unexpected compression/queue sequence: %v", agentSession.sendCalls)
+			}
+		})
+	}
+}
