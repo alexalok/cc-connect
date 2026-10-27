@@ -1663,7 +1663,8 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		if len(parts) > 0 {
 			cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
 			if skill := e.skillsForAgent(agent).Resolve(cmd); skill != nil {
-				content = BuildSkillInvocationPrompt(skill, parts[1:])
+				prepareSkillMessage(agent, msg, skill, parts[1:])
+				content = msg.Content
 			}
 		}
 	}
@@ -1868,7 +1869,8 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 		if len(parts) > 0 {
 			cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
 			if skill := e.skillsForAgent(agent).Resolve(cmd); skill != nil {
-				content = BuildSkillInvocationPrompt(skill, parts[1:])
+				prepareSkillMessage(agent, msg, skill, parts[1:])
+				content = msg.Content
 			}
 		}
 	}
@@ -4180,7 +4182,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 			sendDone <- fmt.Errorf("agent session became nil")
 			return
 		}
-		sendDone <- sendAgentMessage(as, promptContent, msg.MessageID, msg.Images, msg.Files, msg.OnDelivered)
+		sendDone <- sendSkillMessage(as, promptContent, msg)
 	}()
 
 	e.processInteractiveEvents(state, session, sessions, interactiveKey, msg.MessageID, turnStart, stopTyping, sendDone, msg.ReplyCtx, lockGen)
@@ -15703,7 +15705,6 @@ func (e *Engine) cmdCommandsDel(p Platform, msg *Message, args []string) {
 // ──────────────────────────────────────────────────────────────
 
 func (e *Engine) executeSkill(p Platform, msg *Message, skill *Skill, args []string) {
-	prompt := BuildSkillInvocationPrompt(skill, args)
 	_, _, _, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
@@ -15733,7 +15734,7 @@ func (e *Engine) executeSkill(p Platform, msg *Message, skill *Skill, args []str
 		"workspace", workspaceDir,
 	)
 
-	msg.Content = prompt
+	prepareSkillMessage(agent, msg, skill, args)
 	go e.processInteractiveMessageWith(p, msg, session, agent, sessions, interactiveKey, workspaceDir, msg.SessionKey, lockGen)
 }
 
