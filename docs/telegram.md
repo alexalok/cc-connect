@@ -346,11 +346,22 @@ are represented by a note pointing to the original chat.
 Replies resume that same chat in its saved working directory. `/history`
 can read its native history before the first bot turn. Discovery does not
 start a Codex turn. Completed messages are mirrored; token-by-token streaming,
-message edits, and subsequent title, archive, or deletion changes are not
+message edits, and subsequent title or deletion changes are not
 mirrored. `/new` or `/switch` in a topic stops delivery from its original chat.
 Delivery progress is saved after each successful message chunk and survives
 restarts. A crash between Telegram accepting a chunk and saving that progress
 can replay the last chunk.
+
+Archiving a linked Codex chat in another client removes its corresponding
+Telegram topic, including the topic's messages, on the next poll. This also
+applies to topics originally created through Telegram in `topic_sync_chat_id`.
+The bridge checks Codex's persisted `archived_sessions` records, so it catches
+archives made while offline and does not treat missing files as archives.
+Codex's native archived history is preserved. Busy topics wait until their turn
+finishes; topics reused with `/new` or `/switch` are only removed if their
+currently selected conversation is archived. Failed Telegram deletions retry
+on later polls, including after restarts. Successful deletions are remembered;
+unarchiving a chat does not recreate its removed topic.
 
 Keep the session files and their `.topic-sync-*.json` companions together
 when backing up or moving the bot. A malformed sync file stops startup
