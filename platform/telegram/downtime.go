@@ -40,6 +40,22 @@ func (b *startupBot) CreateForumTopic(ctx context.Context, params *tgbot.CreateF
 	return creator.CreateForumTopic(ctx, params)
 }
 
+func (b *startupBot) GetChat(ctx context.Context, params *tgbot.GetChatParams) (*models.ChatFullInfo, error) {
+	inspector, ok := b.telegramBot.(topicSyncChatInspector)
+	if !ok {
+		return nil, core.ErrNotSupported
+	}
+	return inspector.GetChat(ctx, params)
+}
+
+func (b *startupBot) GetChatMember(ctx context.Context, params *tgbot.GetChatMemberParams) (*models.ChatMember, error) {
+	inspector, ok := b.telegramBot.(topicSyncChatInspector)
+	if !ok {
+		return nil, core.ErrNotSupported
+	}
+	return inspector.GetChatMember(ctx, params)
+}
+
 func (b *startupBot) setPollingOffset(lastID int64) { b.setOffset(lastID) }
 
 func (b *startupBot) pendingUpdates(ctx context.Context, offset int64) ([]*models.Update, error) {
