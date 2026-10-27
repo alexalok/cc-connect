@@ -25,7 +25,8 @@ func (p *Platform) DeleteSessionTopic(ctx context.Context, key string) (bool, er
 		return false, err
 	}
 	rc := reply.(replyContext)
-	if rc.chatID != p.topicSyncChatID || rc.threadID <= 0 {
+	// General belongs to the supergroup itself, not to one conversation.
+	if rc.chatID != p.topicSyncChatID || rc.threadID <= 0 || (rc.chatID < 0 && rc.threadID == 1) {
 		return false, nil
 	}
 	bot, err := p.connectedBot("delete synced topic")

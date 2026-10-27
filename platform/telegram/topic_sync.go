@@ -18,6 +18,11 @@ type forumTopicCreator interface {
 	CreateForumTopic(context.Context, *tgbot.CreateForumTopicParams) (*models.ForumTopic, error)
 }
 
+type topicSyncChatInspector interface {
+	GetChat(context.Context, *tgbot.GetChatParams) (*models.ChatFullInfo, error)
+	GetChatMember(context.Context, *tgbot.GetChatMemberParams) (*models.ChatMember, error)
+}
+
 func parseTopicSyncOptions(opts map[string]any, allowFrom string) (int64, time.Duration, error) {
 	interval := 10 * time.Second
 	if value, exists := opts["topic_sync_interval_seconds"]; exists {
@@ -32,12 +37,12 @@ func parseTopicSyncOptions(opts map[string]any, allowFrom string) (int64, time.D
 		return 0, interval, nil
 	}
 	id, err := strconv.ParseInt(strings.TrimSpace(fmt.Sprint(value)), 10, 64)
-	if err != nil || id <= 0 {
-		return 0, 0, fmt.Errorf("telegram: topic_sync_chat_id must be a positive private chat/user ID")
+	if err != nil || id == 0 {
+		return 0, 0, fmt.Errorf("telegram: topic_sync_chat_id must be a non-zero private chat/user or supergroup ID")
 	}
-	// Requiring an explicit permitted user prevents a config typo from
-	// publishing private session titles to a destination that cannot reply.
-	if !core.AllowList(allowFrom, strconv.FormatInt(id, 10)) {
+	// A private destination must be able to reply. Group IDs are not users:
+	// allow_from still controls which humans can interact with group topics.
+	if id > 0 && !core.AllowList(allowFrom, strconv.FormatInt(id, 10)) {
 		return 0, 0, fmt.Errorf("telegram: topic_sync_chat_id must be permitted by allow_from")
 	}
 	return id, interval, nil
@@ -58,12 +63,6 @@ func (p *Platform) CreateSessionTopic(ctx context.Context, title string) (string
 	if err != nil {
 		return "", err
 	}
-	p.mu.RLock()
-	enabled := p.selfUser != nil && p.selfUser.HasTopicsEnabled
-	p.mu.RUnlock()
-	if !enabled {
-		return "", fmt.Errorf("telegram: enable private chat topics in BotFather before using topic sync")
-	}
 	creator, ok := bot.(forumTopicCreator)
 	if !ok {
 		return "", core.ErrNotSupported
@@ -75,6 +74,9 @@ func (p *Platform) CreateSessionTopic(ctx context.Context, title string) (string
 	if runes := []rune(title); len(runes) > 128 {
 		title = string(runes[:128])
 	}
+	if err := p.validateTopicSyncChat(ctx, bot); err != nil {
+		return "", err
+	}
 	topic, err := creator.CreateForumTopic(ctx, &tgbot.CreateForumTopicParams{ChatID: p.topicSyncChatID, Name: title})
 	if err != nil {
 		return "", fmt.Errorf("telegram: create session topic: %s", core.RedactToken(err.Error(), p.token))
@@ -82,7 +84,51 @@ func (p *Platform) CreateSessionTopic(ctx context.Context, title string) (string
 	if topic == nil || topic.MessageThreadID <= 0 {
 		return "", fmt.Errorf("telegram: create session topic returned no topic ID")
 	}
-	// In a private chat the chat ID is also the user ID. Use the same key
-	// builder as incoming updates, including share_session_in_channel mode.
+	// A DM's chat ID is its user ID. The supergroup destination uses a shared
+	// topic key, matching incoming messages and callbacks from every allowed user.
 	return p.buildSessionKey(p.topicSyncChatID, topic.MessageThreadID, p.topicSyncChatID), nil
+}
+
+// Query Telegram instead of requiring a separate destination-type setting.
+// Recheck before each creation so changed forum settings or admin rights are
+// reported without restarting; a group does not require DM topic mode.
+func (p *Platform) validateTopicSyncChat(ctx context.Context, bot telegramBot) error {
+	inspector, ok := bot.(topicSyncChatInspector)
+	if !ok {
+		return core.ErrNotSupported
+	}
+	chat, err := inspector.GetChat(ctx, &tgbot.GetChatParams{ChatID: p.topicSyncChatID})
+	if err != nil {
+		return fmt.Errorf("telegram: inspect topic sync destination: %s", core.RedactToken(err.Error(), p.token))
+	}
+	if chat == nil || chat.ID != p.topicSyncChatID {
+		return fmt.Errorf("telegram: topic sync destination lookup returned no matching chat")
+	}
+	p.mu.RLock()
+	me := p.selfUser
+	p.mu.RUnlock()
+	switch chat.Type {
+	case models.ChatTypePrivate:
+		if me == nil || !me.HasTopicsEnabled {
+			return fmt.Errorf("telegram: enable private chat topics in BotFather before using topic sync")
+		}
+		return nil
+	case models.ChatTypeSupergroup:
+		if !chat.IsForum {
+			return fmt.Errorf("telegram: enable Topics in the supergroup before using topic sync")
+		}
+		if me == nil {
+			return fmt.Errorf("telegram: bot identity unavailable for topic sync permission check")
+		}
+		member, err := inspector.GetChatMember(ctx, &tgbot.GetChatMemberParams{ChatID: chat.ID, UserID: me.ID})
+		if err != nil {
+			return fmt.Errorf("telegram: inspect topic sync permissions: %s", core.RedactToken(err.Error(), p.token))
+		}
+		if member == nil || member.Type != models.ChatMemberTypeAdministrator || member.Administrator == nil || !member.Administrator.CanManageTopics {
+			return fmt.Errorf("telegram: topic sync requires the bot to be a supergroup administrator with Manage Topics permission")
+		}
+		return nil
+	default:
+		return fmt.Errorf("telegram: topic sync destination must be a private chat or a supergroup with Topics enabled (got %s)", chat.Type)
+	}
 }

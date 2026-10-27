@@ -68,6 +68,26 @@ func (b *rateLimitRetryBot) CreateForumTopic(ctx context.Context, params *tgbot.
 	})
 }
 
+func (b *rateLimitRetryBot) GetChat(ctx context.Context, params *tgbot.GetChatParams) (*models.ChatFullInfo, error) {
+	inspector, ok := b.telegramBot.(topicSyncChatInspector)
+	if !ok {
+		return nil, core.ErrNotSupported
+	}
+	return retryOnRateLimit(ctx, "getChat", func() (*models.ChatFullInfo, error) {
+		return inspector.GetChat(ctx, params)
+	})
+}
+
+func (b *rateLimitRetryBot) GetChatMember(ctx context.Context, params *tgbot.GetChatMemberParams) (*models.ChatMember, error) {
+	inspector, ok := b.telegramBot.(topicSyncChatInspector)
+	if !ok {
+		return nil, core.ErrNotSupported
+	}
+	return retryOnRateLimit(ctx, "getChatMember", func() (*models.ChatMember, error) {
+		return inspector.GetChatMember(ctx, params)
+	})
+}
+
 func retryOnRateLimit[T any](ctx context.Context, method string, call func() (T, error)) (T, error) {
 	for attempt := 1; ; attempt++ {
 		res, err := call()

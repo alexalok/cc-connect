@@ -21,6 +21,10 @@ func (a *cujMessageDiscoveryAgent) ReadSessionMessages(context.Context, string) 
 // This subcase belongs to B13: a real engine and persisted session store bridge
 // a desktop conversation into a topic, then accept input from both clients.
 func testCUJExternalConversationMirroring(t *testing.T) {
+	testCUJConversationMirroring(t, "owner", "", []string{"owner"})
+}
+
+func testCUJConversationMirroring(t *testing.T, destination, keyPrefix string, users []string) {
 	a := &cujMessageDiscoveryAgent{
 		cujTopicDiscoveryAgent: cujTopicDiscoveryAgent{cujDirectoryAgent: cujDirectoryAgent{
 			defaultWorkDir: "/default", workDirs: map[string]string{"desktop-chat": "/desktop/project"},
@@ -28,7 +32,7 @@ func testCUJExternalConversationMirroring(t *testing.T) {
 		}},
 		messages: []SessionMessage{{ID: "u1", Role: "user", Content: "Original desktop question"}, {ID: "a1", Role: "assistant", Content: "Original desktop answer"}},
 	}
-	p := &topicSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, target: "owner"}
+	p := &topicSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, target: destination, keyPrefix: keyPrefix}
 	path := filepath.Join(t.TempDir(), "sessions.json")
 	e, worker := newTopicSyncTest(t, a, p, path)
 	poll := func(w *sessionTopicSync) {
@@ -44,9 +48,12 @@ func testCUJExternalConversationMirroring(t *testing.T) {
 	}
 	key := p.keys[0]
 	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	actions := 0
 	send := func(engine *Engine, text string) {
 		p.clearSent()
-		engine.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", UserID: "owner", Content: text, ReplyCtx: key})
+		user := users[actions%len(users)]
+		actions++
+		engine.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", UserID: user, Content: text, ReplyCtx: key})
 	}
 	// Action 1: inspect the conversation selected by the imported topic.
 	send(e, "/current")
