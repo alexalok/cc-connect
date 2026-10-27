@@ -125,6 +125,7 @@ type Platform struct {
 	i18n                  *core.I18n
 	downtime              *downtimeDrain
 	processedCursor       updateCursor // protected by mu
+	topicStatus           *topicStatusUpdater
 
 	mu                  sync.RWMutex
 	bot                 telegramBot
@@ -156,6 +157,11 @@ func New(opts map[string]any) (core.Platform, error) {
 	allowFrom, _ := opts["allow_from"].(string)
 	core.CheckAllowFrom("telegram", allowFrom)
 	topicChatID, topicInterval, err := parseTopicSyncOptions(opts, allowFrom)
+	if err != nil {
+		return nil, err
+	}
+
+	status, err := newTopicStatusUpdater(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -232,6 +238,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		collapseProgressAfter: collapseProgressAfter,
 		progressStyle:         progressStyle,
 		httpClient:            httpClient,
+		topicStatus:           status,
 	}, nil
 }
 
@@ -282,6 +289,9 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 	p.selfUser = nil
 
 	go p.connectLoop(ctx)
+	if p.topicStatus != nil {
+		go p.runTopicStatus(ctx)
+	}
 	return nil
 }
 
