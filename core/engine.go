@@ -566,6 +566,8 @@ type interactiveState struct {
 	workspaceDir             string
 	agent                    Agent
 	mu                       sync.Mutex
+	statusMu                 sync.Mutex         // serializes status publication; acquire before mu
+	conversationStatus       ConversationStatus // protected by statusMu
 	stopCh                   chan struct{}
 	stopped                  bool
 	pending                  *pendingPermission
@@ -4039,6 +4041,9 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	if agent != e.agent {
 		agentOverride = agent
 	}
+	if setter, ok := p.(ConversationStatusSetter); ok {
+		setter.SetConversationStatus(e.ctx, msg.ReplyCtx, ConversationWorking)
+	}
 	state := e.getOrCreateInteractiveStateWith(interactiveKey, p, msg.ReplyCtx, session, sessions, agentOverride, ccSessionKey)
 
 	// Set workspaceDir on the state for idle reaper identification
@@ -4064,6 +4069,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	defer stopRecallMonitor()
 
 	if state.agentSession == nil {
+		e.updateConversationStatus(state, ConversationFailed)
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgFailedToStartAgentSession))
 		return
 	}
@@ -5144,6 +5150,9 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 
 		case event, ok := <-events:
 			if !ok {
+				if turnActive {
+					e.updateConversationStatus(state, ConversationFailed)
+				}
 				// Channel closed — agent process exited. Log any buffered
 				// tool/text context so it isn't lost silently.
 				if len(toolsUsed) > 0 || len(textParts) > 0 {
@@ -5181,6 +5190,7 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 
 			// Mark workspace active on first event.
 			if !turnActive {
+				e.updateConversationStatus(state, ConversationWorking)
 				turnActive = true
 				if workspaceDir != "" && e.workspacePool != nil {
 					if ws := e.workspacePool.Get(workspaceDir); ws != nil {
@@ -5223,6 +5233,9 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 				e.relayModelSwitch(p, replyCtx, sessionKey, event.ModelSwitch)
 
 			case EventResult:
+				if event.Done {
+					e.updateConversationStatus(state, ConversationFinished)
+				}
 				fullResponse := event.Content
 				if fullResponse == "" && len(textParts) > 0 {
 					fullResponse = strings.Join(textParts, "")
@@ -5325,6 +5338,7 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 				}
 
 			case EventError:
+				e.updateConversationStatus(state, ConversationFailed)
 				// A turn can fail while the persistent session and its background
 				// tasks keep running. Deliver buffered text before the error and
 				// keep consuming the live stream instead of abandoning its events.
@@ -5406,6 +5420,9 @@ var agentErrorHandlers = []agentErrorHandler{
 }
 
 func (e *Engine) processInteractiveEvents(state *interactiveState, session *Session, sessions *SessionManager, sessionKey string, msgID string, turnStart time.Time, stopTypingFn func(), sendDone <-chan error, replyCtx any, lockGen uint64) {
+	e.updateConversationStatus(state, ConversationWorking)
+	status := ConversationFailed
+	defer func() { e.updateConversationStatus(state, status) }()
 	if msgID != "" {
 		state.mu.Lock()
 		state.currentMessageID = msgID
@@ -5512,6 +5529,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 		select {
 		case <-stopCh:
+			status = ConversationStopped
 			sp.discard()
 			return
 		case event, ok = <-events:
@@ -5599,6 +5617,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			e.cleanupInteractiveState(sessionKey, state)
 			return
 		case <-e.ctx.Done():
+			status = ConversationStopped
 			state.mu.Lock()
 			state.eventsNeedResync = true
 			state.mu.Unlock()
@@ -5606,6 +5625,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		}
 
 		if state.isStopped() {
+			status = ConversationStopped
 			sp.discard()
 			state.mu.Lock()
 			state.eventsNeedResync = true
@@ -6136,6 +6156,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			state.mu.Lock()
 			state.pending = pending
 			state.mu.Unlock()
+			e.updateConversationStatus(state, "")
 
 			if isAskQuestion {
 				e.sendAskQuestionPrompt(p, replyCtx, event.Questions, 0)
@@ -6157,6 +6178,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 			<-pending.Resolved
+			e.updateConversationStatus(state, "")
 			slog.Info("permission resolved", "request_id", event.RequestID)
 
 			// The stream preview was frozen+detached when this permission
@@ -6609,6 +6631,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 					// Run compress inline while the session is still locked.
 					e.runCompress(state, session, sessions, sessionKey, state.platform, state.replyCtx, true, lockGen)
+					status = ConversationFinished
 					return
 				}
 			}
@@ -6772,6 +6795,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 			}
 
+			status = ConversationFinished
 			return
 
 		case EventError:
@@ -10949,6 +10973,7 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 	closePlatform := state.platform
 	closeReplyCtx := state.replyCtx
 	state.mu.Unlock()
+	e.updateConversationStatus(state, ConversationStopped)
 
 	// If the agent session supports graceful turn cancellation (e.g. ACP),
 	// send a cancel notification and keep the session alive for the next

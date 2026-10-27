@@ -112,6 +112,7 @@ type Platform struct {
 	enableReactions       bool
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
+	topicStatus           *topicStatusUpdater
 
 	mu                  sync.RWMutex
 	bot                 telegramBot
@@ -141,6 +142,11 @@ func New(opts map[string]any) (core.Platform, error) {
 	}
 	allowFrom, _ := opts["allow_from"].(string)
 	core.CheckAllowFrom("telegram", allowFrom)
+
+	status, err := newTopicStatusUpdater(opts)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build HTTP client with optional proxy support.
 	// Timeout must exceed the server-side long-poll duration (pollTimeout − 1s = 59s)
@@ -190,6 +196,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		enableReactions:       enableReactions,
 		progressStyle:         progressStyle,
 		httpClient:            httpClient,
+		topicStatus:           status,
 	}, nil
 }
 
@@ -240,6 +247,9 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 	p.selfUser = nil
 
 	go p.connectLoop(ctx)
+	if p.topicStatus != nil {
+		go p.runTopicStatus(ctx)
+	}
 	return nil
 }
 
