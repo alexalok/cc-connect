@@ -521,6 +521,22 @@ level = "info" # debug, info, warn, error
 # api_key = "gsk_xxx"
 # model = "whisper-large-v3-turbo"
 
+# Realtime transcription through an OpenAI-compatible gateway (for example,
+# a local gateway using an existing ChatGPT/Codex subscription).
+# 实时语音转写：可通过兼容网关使用已有的 ChatGPT/Codex 订阅。
+# Requires ffmpeg. Reuse [speech.openai] for the gateway's URL and credential.
+# 需要 ffmpeg；网关地址与凭据使用 [speech.openai] 配置。
+# [speech]
+# enabled = true
+# provider = "openai-realtime"
+# [speech.openai]
+# api_key = "your-gateway-key"
+# base_url = "http://127.0.0.1:10101/v1"
+# model = "gpt-transcribe"
+# The default api.openai.com endpoint requires separately billed API access;
+# ChatGPT subscription access depends on the configured gateway.
+# 默认 api.openai.com 端点需要独立计费的 API 访问；订阅支持取决于网关。
+
 # =============================================================================
 # Text-to-Speech (Voice Reply) / 文字转语音（语音回复）
 # =============================================================================
@@ -1228,7 +1244,9 @@ app_secret = "your-feishu-app-secret"
 # proxy_password = ""              # Optional proxy auth password / 代理密码
 # group_reply_all = false  # If true, respond to ALL group messages without @mention / 设为 true 群聊无需 @ 也响应
 # share_session_in_channel = false  # If true, all users in a group share one agent session / 群聊共享会话
-# enable_reactions = false  # If true, add ⚡ reaction to incoming messages / 设为 true 收到消息时添加 ⚡ 表情
+# read_receipts = true  # Add 👀 only after the agent confirms receipt (Codex app_server); queued messages stay unmarked
+#                       # 仅在代理确认接收后添加 👀（Codex app_server）；排队时不标记
+# enable_reactions = false  # Legacy ⚡ on arrival, only when read_receipts = false / 旧版收件表情，仅关闭 read_receipts 时生效
 # progress_style = "compact"  # Progress rendering: legacy | compact (default). Telegram has no rich card UI,
 #                             # so "card" is normalized to "compact". Set "legacy" to disable streaming edits.
 #                             # 进度展示：legacy | compact（默认）。Telegram 不支持富卡片，"card" 会被规整为 "compact"。
@@ -1727,10 +1745,12 @@ app_secret = "your-feishu-app-secret"
 # mode = "suggest"  # "suggest" | "auto-edit" | "full-auto" | "yolo"
 # list_all_sessions = false # true: list/switch sessions across all directories in this Codex home.
 #                           # Resuming uses the session's saved directory; new sessions still use work_dir.
+#                           # /shell, /diff and /show follow that directory; /dir and /status display it.
 #                           # Subagent/archived sessions stay hidden; filter_external_sessions still applies.
 #                           # Also controls the directory scope of Telegram topic_sync_chat_id discovery.
 #                           # 设为 true 可列出并切换当前 Codex 配置目录中所有工作目录的会话。
 #                           # 恢复时使用会话保存的目录，新会话仍使用 work_dir；子代理和归档会话不显示。
+#                           # /shell、/diff 和 /show 使用会话目录；/dir 和 /status 显示该目录。
 #
 # Mode options / 模式说明:
 # - "suggest":   ask permission for every tool call (default, safest) / 每次调用都需确认（默认，最安全）

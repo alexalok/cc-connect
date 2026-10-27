@@ -264,7 +264,7 @@ type RelayConfig struct {
 // SpeechConfig configures speech-to-text for voice messages.
 type SpeechConfig struct {
 	Enabled  bool   `toml:"enabled"`
-	Provider string `toml:"provider"` // "openai" | "groq" | "qwen" | "gemini"
+	Provider string `toml:"provider"` // "openai" | "openai-realtime" | "groq" | "qwen" | "gemini"
 	Language string `toml:"language"` // e.g. "zh", "en"; empty = auto-detect
 	OpenAI   struct {
 		APIKey  string `toml:"api_key"`

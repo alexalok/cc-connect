@@ -548,6 +548,7 @@ type queuedMessage struct {
 	images            []ImageAttachment
 	files             []FileAttachment
 	fromVoice         bool
+	onDelivered       func()
 	userID            string
 	userName          string // sender's display name for sender injection
 	msgPlatform       string // platform name for sender injection
@@ -3474,6 +3475,7 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 		images:            msg.Images,
 		files:             msg.Files,
 		fromVoice:         msg.FromVoice,
+		onDelivered:       msg.OnDelivered,
 		userID:            msg.UserID,
 		userName:          msg.UserName,
 		msgPlatform:       msg.Platform,
@@ -3578,7 +3580,7 @@ func (e *Engine) handleVoiceMessage(p Platform, msg *Message) {
 	}
 
 	audio := msg.Audio
-	if NeedsConversion(audio.Format) && !HasFFmpeg() {
+	if speechNeedsConversion(e.speech.STT, audio.Format) && !HasFFmpeg() {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgVoiceNoFFmpeg))
 		return
 	}
@@ -4178,7 +4180,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 			sendDone <- fmt.Errorf("agent session became nil")
 			return
 		}
-		sendDone <- as.Send(promptContent, msg.MessageID, msg.Images, msg.Files)
+		sendDone <- sendAgentMessage(as, promptContent, msg.MessageID, msg.Images, msg.Files, msg.OnDelivered)
 	}()
 
 	e.processInteractiveEvents(state, session, sessions, interactiveKey, msg.MessageID, turnStart, stopTyping, sendDone, msg.ReplyCtx, lockGen)
@@ -6723,7 +6725,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						nextSend <- fmt.Errorf("agent session became nil")
 						return
 					}
-					nextSend <- as.Send(queuedPrompt, queued.messageID, queued.images, queued.files)
+					nextSend <- sendAgentMessage(as, queuedPrompt, queued.messageID, queued.images, queued.files, queued.onDelivered)
 				}()
 				pendingSend = nextSend
 
@@ -7061,7 +7063,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 				sendDone <- fmt.Errorf("agent session became nil")
 				return
 			}
-			sendDone <- as.Send(prompt, queued.messageID, queued.images, queued.files)
+			sendDone <- sendAgentMessage(as, prompt, queued.messageID, queued.images, queued.files, queued.onDelivered)
 		}()
 
 		var stopTyping func()
@@ -7152,7 +7154,7 @@ func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsNoSession))
 		return
 	}
-	if err := state.agentSession.Send(text, "", nil, nil); err != nil {
+	if err := sendAgentMessage(state.agentSession, text, msg.MessageID, nil, nil, msg.OnDelivered); err != nil {
 		slog.Error("ps: send failed", "error", err)
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsSendFailed))
 		return
@@ -7939,7 +7941,7 @@ func (e *Engine) matchSession(sessions []AgentSessionInfo, manager *SessionManag
 	return nil
 }
 
-func (e *Engine) commandWorkDir(agent Agent, msg *Message) string {
+func (e *Engine) defaultCommandWorkDir(agent Agent, msg *Message) string {
 	if switcher, ok := agent.(WorkDirSwitcher); ok {
 		if wd := strings.TrimSpace(switcher.GetWorkDir()); wd != "" {
 			return normalizeWorkspacePath(wd)
@@ -8559,12 +8561,16 @@ func (e *Engine) cmdShow(p Platform, msg *Message, args []string) {
 		return
 	}
 
-	agent, _, _, err := e.commandContext(p, msg)
+	agent, sessions, interactiveKey, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
-	workDir := e.commandWorkDir(agent, msg)
+	workDir, err := e.commandWorkDir(agent, sessions, interactiveKey, msg)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
+		return
+	}
 	req, err := buildReferenceViewRequest(rawRef, workDir)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgShowParseError, rawRef))
@@ -8881,12 +8887,16 @@ func (e *Engine) cmdShell(p Platform, msg *Message, raw string) {
 		}
 	}
 
-	agent, _, _, err := e.commandContext(p, msg)
+	agent, sessions, interactiveKey, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
-	workDir := e.commandWorkDir(agent, msg)
+	workDir, err := e.commandWorkDir(agent, sessions, interactiveKey, msg)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
+		return
+	}
 	if workDir == "" {
 		workDir, _ = os.Getwd()
 	}
@@ -8906,21 +8916,15 @@ func (e *Engine) cmdDiff(p Platform, msg *Message, raw string) {
 		return
 	}
 
-	// Resolve working directory (same pattern as cmdShell)
-	var workDir string
-	if e.multiWorkspace {
-		channelKey := e.effectiveWorkspaceChannelKey(msg)
-		if b, _, usable := e.lookupEffectiveWorkspaceBinding(channelKey); usable {
-			workDir = normalizeWorkspacePath(b.Workspace)
-		}
+	agent, sessions, interactiveKey, err := e.commandContext(p, msg)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
+		return
 	}
-	if workDir == "" {
-		if wd, ok := e.agent.(interface{ GetWorkDir() string }); ok {
-			workDir = wd.GetWorkDir()
-		}
-	}
-	if workDir == "" {
-		workDir, _ = os.Getwd()
+	workDir, err := e.commandWorkDir(agent, sessions, interactiveKey, msg)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
+		return
 	}
 
 	go func() {
@@ -9086,7 +9090,10 @@ func (e *Engine) dirApply(agent Agent, sessions *SessionManager, interactiveKey,
 				newDir = filepath.Join(homeDir, strings.TrimPrefix(newDir, "~"))
 			}
 		} else if !filepath.IsAbs(newDir) {
-			baseDir := currentDir
+			baseDir, err := e.commandWorkDir(agent, sessions, interactiveKey, &Message{SessionKey: sessionKey})
+			if err != nil {
+				return e.i18n.Tf(MsgError, err), ""
+			}
 			if baseDir == "" {
 				baseDir, _ = os.Getwd()
 			}
@@ -9133,17 +9140,20 @@ func (e *Engine) cmdDir(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
-	switcher, ok := agent.(WorkDirSwitcher)
+	_, ok := agent.(WorkDirSwitcher)
 	if !ok {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgDirNotSupported))
 		return
 	}
 
-	currentDir := switcher.GetWorkDir()
-
 	if len(args) == 0 {
 		if supportsCards(p) {
 			e.replyWithCard(p, msg.ReplyCtx, e.renderDirCardSafe(msg.SessionKey, 1))
+			return
+		}
+		currentDir, err := e.commandWorkDir(agent, sessions, interactiveKey, msg)
+		if err != nil {
+			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
 			return
 		}
 		var sb strings.Builder
@@ -9359,7 +9369,7 @@ func (e *Engine) cmdCurrent(p Platform, msg *Message) {
 
 func (e *Engine) cmdStatus(p Platform, msg *Message) {
 	if !supportsCards(p) {
-		agent, sessions, _, err := e.commandContext(p, msg)
+		agent, sessions, interactiveKey, err := e.commandContext(p, msg)
 		if err != nil {
 			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 			return
@@ -9373,7 +9383,11 @@ func (e *Engine) cmdStatus(p Platform, msg *Message) {
 			platformStr = "-"
 		}
 
-		workDirStr := e.commandWorkDir(agent, msg)
+		workDirStr, err := e.commandWorkDir(agent, sessions, interactiveKey, msg)
+		if err != nil {
+			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
+			return
+		}
 
 		uptimeStr := formatDurationI18n(time.Since(e.startedAt), e.i18n.CurrentLang())
 
@@ -9804,12 +9818,9 @@ func (e *Engine) renderStatusCard(sessionKey string, userID string) *Card {
 		platformStr = "-"
 	}
 
-	workDirStr := ""
-	if wd, ok := agent.(interface{ GetWorkDir() string }); ok {
-		workDirStr = strings.TrimSpace(wd.GetWorkDir())
-	}
-	if workDirStr == "" {
-		workDirStr, _ = os.Getwd()
+	workDirStr, err := e.commandWorkDir(agent, sessions, e.interactiveKeyForSessionKey(sessionKey), &Message{SessionKey: sessionKey})
+	if err != nil {
+		return e.simpleCard(e.i18n.T(MsgCardTitleStatus), "red", e.i18n.Tf(MsgError, err))
 	}
 
 	uptimeStr := formatDurationI18n(time.Since(e.startedAt), e.i18n.CurrentLang())
@@ -14040,12 +14051,15 @@ func dirCardTruncPath(absPath string) string {
 }
 
 func (e *Engine) renderDirCard(sessionKey string, page int) (*Card, error) {
-	agent, _ := e.sessionContextForKey(sessionKey)
-	switcher, ok := agent.(WorkDirSwitcher)
+	agent, sessions := e.sessionContextForKey(sessionKey)
+	_, ok := agent.(WorkDirSwitcher)
 	if !ok {
 		return nil, fmt.Errorf("%s", e.i18n.T(MsgDirNotSupported))
 	}
-	currentDir := switcher.GetWorkDir()
+	currentDir, err := e.commandWorkDir(agent, sessions, e.interactiveKeyForSessionKey(sessionKey), &Message{SessionKey: sessionKey})
+	if err != nil {
+		return nil, err
+	}
 	var history []string
 	if e.dirHistory != nil {
 		history = e.dirHistory.List(e.name)
