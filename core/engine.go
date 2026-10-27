@@ -4161,7 +4161,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 			stopTyping()
 			stopTyping = nil
 		}
-		e.updateConversationStatus(state, ConversationFailed)
+		e.updateConversationStatusForTurn(state, session, interactiveKey, lockGen, ConversationFailed)
 		failureMsg := state.startFailureMsg
 		if failureMsg == "" {
 			failureMsg = MsgFailedToStartAgentSession
@@ -5548,9 +5548,17 @@ var agentErrorHandlers = []agentErrorHandler{
 }
 
 func (e *Engine) processInteractiveEvents(state *interactiveState, session *Session, sessions *SessionManager, sessionKey string, msgID string, turnStart time.Time, stopTypingFn func(), sendDone <-chan error, replyCtx any, lockGen uint64) {
-	e.updateConversationStatus(state, ConversationWorking)
+	updateStatus := func(status ConversationStatus) {
+		e.updateConversationStatusForTurn(state, session, sessionKey, lockGen, status)
+	}
+	updateStatus(ConversationWorking)
 	status := ConversationFailed
-	defer func() { e.updateConversationStatus(state, status) }()
+	finalizeStatus := true
+	defer func() {
+		if finalizeStatus {
+			updateStatus(status)
+		}
+	}()
 	if msgID != "" {
 		state.mu.Lock()
 		state.currentMessageID = msgID
@@ -6342,7 +6350,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			state.mu.Lock()
 			state.pending = pending
 			state.mu.Unlock()
-			e.updateConversationStatus(state, "")
+			updateStatus("")
 
 			if isAskQuestion {
 				e.sendAskQuestionPrompt(p, replyCtx, event.Questions, 0)
@@ -6364,7 +6372,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 			<-pending.Resolved
-			e.updateConversationStatus(state, "")
+			updateStatus("")
 			slog.Info("permission resolved", "request_id", event.RequestID)
 
 			// The stream preview was frozen+detached when this permission
@@ -6817,9 +6825,12 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					}
 					e.send(state.platform, state.replyCtx, compressNotice)
 
-					// Run compress inline while the session is still locked.
+					// This request is finished. Compression may drain queued turns
+					// using this same lock generation; let those readers own the
+					// subsequent status instead of overwriting it on our return.
+					updateStatus(ConversationFinished)
+					finalizeStatus = false
 					e.runCompress(state, session, sessions, sessionKey, state.platform, state.replyCtx, true, lockGen)
-					status = ConversationFinished
 					return
 				}
 			}
