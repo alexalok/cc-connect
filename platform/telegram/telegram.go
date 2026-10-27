@@ -111,6 +111,7 @@ type Platform struct {
 	groupReplyAll         bool
 	shareSessionInChannel bool
 	enableReactions       bool
+	readReceipts          bool
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
 	topicRouting          privateTopicRouting
@@ -174,6 +175,10 @@ func New(opts map[string]any) (core.Platform, error) {
 	groupReplyAll, _ := opts["group_reply_all"].(bool)
 	shareSessionInChannel, _ := opts["share_session_in_channel"].(bool)
 	enableReactions, _ := opts["enable_reactions"].(bool)
+	readReceipts := true
+	if v, ok := opts["read_receipts"].(bool); ok {
+		readReceipts = v
+	}
 
 	// Default to "compact" so streaming edits work out of the box. Telegram has
 	// no rich card UI, so "card" is normalized to "compact". Users can opt out
@@ -201,6 +206,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		groupReplyAll:         groupReplyAll,
 		shareSessionInChannel: shareSessionInChannel,
 		enableReactions:       enableReactions,
+		readReceipts:          readReceipts,
 		progressStyle:         progressStyle,
 		httpClient:            httpClient,
 	}, nil
@@ -467,7 +473,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 	}
 
 	rctx := replyContext{chatID: msg.Chat.ID, threadID: threadID, messageID: msg.ID}
-	if p.enableReactions {
+	if p.enableReactions && !p.readReceipts {
 		go p.reactToMessage(ctx, msg.Chat.ID, msg.ID, "⚡")
 	}
 	botName := p.botUsername()
@@ -601,6 +607,9 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 }
 
 func (p *Platform) dispatchMessage(msg *core.Message, tgMsg *models.Message) {
+	if p.readReceipts {
+		msg.OnDelivered = p.readReceipt(tgMsg.Chat.ID, tgMsg.ID)
+	}
 	// Enrich with platform-specific context (reply quotes, location text, etc.)
 	var extras []string
 	if replyText := enrichReplyContent(tgMsg); replyText != "" {

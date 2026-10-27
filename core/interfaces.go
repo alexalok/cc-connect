@@ -429,6 +429,14 @@ type AgentSession interface {
 	Close() error
 }
 
+// ReceiptAwareSession can confirm that the agent accepted a particular input.
+// Implementations call onDelivered at most once, only after an acknowledgment
+// from the agent. A successful pipe write or bridge queue insertion is not enough.
+// Agents without this capability must not produce delivery receipts.
+type ReceiptAwareSession interface {
+	SendWithReceipt(prompt, messageID string, images []ImageAttachment, files []FileAttachment, onDelivered func()) error
+}
+
 // PermissionResult represents the user's decision on a permission request.
 type PermissionResult struct {
 	Behavior     string         `json:"behavior"`               // "allow" or "deny"
@@ -437,7 +445,8 @@ type PermissionResult struct {
 }
 
 // UserInputSteerer delivers an answer to a non-blocking question while the agent
-// continues working. False means there is no active turn; use normal Send instead.
+// continues working. True with no error confirms the agent accepted the input.
+// False means there is no active turn; use normal Send instead.
 type UserInputSteerer interface {
 	SteerUserInput(prompt string) (bool, error)
 }

@@ -53,6 +53,29 @@ Keep your token secure...
 
 ---
 
+## Message read indicators
+
+With `read_receipts = true` (the default), an **👀 reaction on your original
+message** means the agent confirmed receipt of that input. Codex supports this
+with `backend = "app_server"`, after a successful `turn/start` acknowledgment.
+Replies to its non-blocking questions are marked after `turn/steer` succeeds;
+answers collected across several questions are marked together when delivered.
+
+Messages waiting for startup, transcription, or a busy agent stay unmarked.
+Rejected messages and failed sends do not receive the indicator. Voice messages
+are marked on the original voice bubble after Codex accepts the transcription.
+The reaction confirms receipt, not successful completion of the requested work.
+Agents that cannot acknowledge input do not produce read indicators.
+
+Telegram bots use [message reactions](https://core.telegram.org/bots/api#setmessagereaction)
+for this indicator. Telegram's native read-marking API is limited to connected
+business accounts. The chat must allow the 👀 reaction; a Telegram API failure
+may prevent the indicator even when the agent received the message.
+
+Set `read_receipts = false` under `[projects.platforms.options]` to disable it.
+The older `enable_reactions = true` option adds ⚡ on arrival at the bridge and
+only applies when read receipts are disabled.
+
 ## Step 2: Configure cc-connect
 
 Add the token to your `config.toml`:

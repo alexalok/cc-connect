@@ -45,6 +45,8 @@ import (
 // working, then check status. Both messages have receipts before either answer;
 // draining the queue must preserve each receipt without adding another one.
 func TestCUJ_A8_ImmediateReceiptsDuringStartupAndQueue(t *testing.T) {
+	t.Run("agent_confirmed", testAgentConfirmedReceipts)
+
 	env := newReceiptAckEnv(t, nil)
 
 	// User action 1: submit the first task while agent startup is blocked.
