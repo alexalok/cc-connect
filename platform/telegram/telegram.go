@@ -114,6 +114,8 @@ type Platform struct {
 	readReceipts          bool
 	richMessages          bool
 	richMessagesAuto      bool
+	collapseProgress      bool
+	collapseProgressAfter int
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
 	topicRouting          privateTopicRouting
@@ -186,6 +188,10 @@ func New(opts map[string]any) (core.Platform, error) {
 	if err != nil {
 		return nil, err
 	}
+	collapseProgress, collapseProgressAfter, err := parseCollapseProgressOptions(opts, richMessages)
+	if err != nil {
+		return nil, err
+	}
 
 	// Default to "compact" so streaming edits work out of the box. Telegram has
 	// no rich card UI, so "card" is normalized to "compact". Users can opt out
@@ -216,6 +222,8 @@ func New(opts map[string]any) (core.Platform, error) {
 		readReceipts:          readReceipts,
 		richMessages:          richMessages,
 		richMessagesAuto:      richMessagesAuto,
+		collapseProgress:      collapseProgress,
+		collapseProgressAfter: collapseProgressAfter,
 		progressStyle:         progressStyle,
 		httpClient:            httpClient,
 	}, nil
