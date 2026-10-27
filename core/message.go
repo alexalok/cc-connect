@@ -405,6 +405,8 @@ type LocationAttachment struct {
 
 // Message represents a unified incoming message from any platform.
 type Message struct {
+	// forceQueue is set by /queue after command authorization and payload parsing.
+	forceQueue   bool
 	SessionKey   string // unique key for user context, e.g. "feishu:{chatID}:{userID}"
 	Platform     string
 	MessageID    string // platform message ID for tracing
