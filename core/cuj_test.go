@@ -2776,6 +2776,55 @@ func TestCUJ_I4_StreamingToggleLinkedToIntegration(t *testing.T) {
 	t.Log("CUJ-I4: covered by release-gate TestCC_STREAM_01_off + TestCC_STREAM_02_on + core/streaming_test.go (14 unit tests)")
 }
 
+// Three requests in one conversation must produce independent combined replies,
+// including when the second request is queued while the first is still running.
+func TestCUJ_I6_CombinedProgressAcrossQueuedTurns(t *testing.T) {
+	p := &progressStreamPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	agent := &cujAgent{}
+	e := NewEngine("combined", agent, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine, agent: agent}
+	send := func(id, text string) {
+		e.ReceiveMessage(p, &Message{SessionKey: "test:combined", Platform: "test", UserID: "alex", MessageID: id, Content: text, ReplyCtx: id})
+	}
+	agent.setNextSessionEvents([]Event{
+		{Type: EventThinking, Content: "First public summary", PublicSummary: true},
+		{Type: EventToolUse, ToolName: "Read", ToolInput: "raw arguments"},
+		{Type: EventResult, Content: "First answer", Done: true},
+	}, 100)
+	send("one", "first task")
+	env.waitFor("first progress", 2*time.Second, func() bool { return strings.Contains(strings.Join(p.getSent(), ""), "First public summary") })
+	// Set the existing agent boundary's next turn before queueing request two.
+	agent.mu.Lock()
+	as := agent.sessions[0]
+	agent.mu.Unlock()
+	as.mu.Lock()
+	as.pendingEvents = []Event{{Type: EventThinking, Content: "Second public summary", PublicSummary: true}, {Type: EventResult, Content: "Second answer", Done: true}}
+	as.mu.Unlock()
+	send("two", "second task")
+	env.waitFor("queued reply", 3*time.Second, func() bool { return strings.Contains(strings.Join(p.getSent(), ""), "</progress>Second answer") })
+	send("three", "third task")
+	env.waitFor("third reply", 2*time.Second, func() bool { return strings.Contains(strings.Join(p.getSent(), ""), "</progress>ok") })
+	var combined []string
+	for _, text := range p.getSent() {
+		if strings.HasPrefix(text, "<progress>") {
+			combined = append(combined, text)
+		}
+	}
+	if len(combined) != 3 {
+		t.Fatalf("expected three combined replies, got %#v", p.getSent())
+	}
+	if !strings.Contains(combined[0], "First public summary") || !strings.HasSuffix(combined[0], "</progress>First answer") {
+		t.Fatal("first reply lost progress or answer")
+	}
+	if strings.Contains(combined[1], "First") || !strings.Contains(combined[1], "Second public summary") || !strings.HasSuffix(combined[1], "</progress>Second answer") {
+		t.Fatal("queued turn inherited the previous card")
+	}
+	if combined[2] != "<progress></progress>ok" {
+		t.Fatal("third turn retained old progress")
+	}
+}
+
 type referenceRenderCUJAgent struct{ *cujAgent }
 
 func (a *referenceRenderCUJAgent) Name() string { return "codex" }

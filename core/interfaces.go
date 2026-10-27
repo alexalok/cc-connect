@@ -756,6 +756,18 @@ type StreamingCard interface {
 	Failed() bool
 }
 
+// ProgressStreamingCard accepts public progress separately from the answer.
+// Update and Finalize receive only answer text for this optional interface.
+// Agents must explicitly mark summaries as public before they are forwarded.
+type ProgressStreamingCard interface {
+	StreamingCard
+	AppendProgress(ctx context.Context, entry ProgressCardEntry) error
+}
+
+// ErrDeliveryUncertain prevents a fallback send when a request may already have
+// delivered a message (for example, a connection lost before the response).
+var ErrDeliveryUncertain = errors.New("message delivery is uncertain")
+
 // StreamingCardPlatform is an optional interface for platforms that support
 // aggregating an entire agent turn into a single updatable card message
 // (e.g. DingTalk AI Card). When the engine detects this interface, it

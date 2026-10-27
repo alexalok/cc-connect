@@ -498,6 +498,7 @@ type UserQuestionOption struct {
 type Event struct {
 	Type                     EventType
 	Content                  string
+	PublicSummary            bool           // EventThinking contains user-facing commentary or a public summary, never raw reasoning
 	ToolName                 string         // populated for EventToolUse, EventPermissionRequest
 	ToolInput                string         // human-readable summary of tool input
 	ToolInputRaw             map[string]any // raw tool input (for EventPermissionRequest, used in allow response)

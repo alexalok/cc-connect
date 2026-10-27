@@ -1249,6 +1249,9 @@ app_secret = "your-feishu-app-secret"
 #                        # Use "auto" for long/structured replies only, or true for all replies.
 #                        # Preserves tables, headings, lists, formulas, and collapsible sections.
 #                        # 设为 true 使用 Telegram 富文本消息，保留表格、标题、列表、公式和折叠内容。
+# collapse_progress = false  # Keep public progress summaries and the answer in one editable message (requires rich_messages).
+# collapse_progress_after = 600  # Collapse summaries at this many characters, or eight lines; shorter summaries stay expanded.
+#                                # 将公开进度摘要与最终回答合并；较长摘要默认折叠，简短摘要保持展开。
 # progress_style = "compact"  # Progress rendering: legacy | compact (default). Telegram has no rich card UI,
 #                             # so "card" is normalized to "compact". Set "legacy" to disable streaming edits.
 #                             # 进度展示：legacy | compact（默认）。Telegram 不支持富卡片，"card" 会被规整为 "compact"。
