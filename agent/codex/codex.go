@@ -50,6 +50,8 @@ type Agent struct {
 	configEnv       []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
 	sessionEnv      []string
 	mu              sync.RWMutex
+	messageCacheMu  sync.Mutex
+	messageCache    map[string]visibleMessageCache
 }
 
 var _ core.SessionWorkDirProvider = (*Agent)(nil)
@@ -636,11 +638,7 @@ func (a *Agent) mergedSessionEnvLocked() []string {
 }
 
 // Session discovery/history must use the same profile as new and resumed turns.
-// Keep the existing resolution when all-directory discovery is not enabled.
 func (a *Agent) sessionCodexHomeLocked() (string, error) {
-	if !a.listAllSessions {
-		return a.codexHome, nil
-	}
 	return absoluteCodexHome(a.codexHome, a.mergedSessionEnvLocked())
 }
 

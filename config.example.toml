@@ -1228,6 +1228,12 @@ app_secret = "your-feishu-app-secret"
 # token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
 # allow_from = "*"  # Allowed Telegram user IDs, e.g. "123456789,987654321"; "*" = all
 #                   # 允许的 Telegram 用户 ID，如 "123456789,987654321"；"*" 表示所有
+# topic_sync_chat_id = "123456789" # Optional: create DM topics for new external Codex chats.
+#                                 # Enable private topics in BotFather; this ID must be allowed above.
+#                                 # New chats only; the first-start cutoff and links survive restarts.
+#                                 # Mirrors user/assistant text; Codex backend = "app_server" is required.
+#                                 # 可选：为外部客户端新建的 Codex 会话创建私聊话题，需要在 BotFather 开启话题。
+# topic_sync_interval_seconds = 10 # Poll every 1–3600 seconds; default 10. / 轮询间隔，默认 10 秒。
 # proxy = "http://127.0.0.1:7890"  # Optional HTTP/SOCKS5 proxy for Telegram Bot API / 可选 HTTP/SOCKS5 代理
 # proxy_username = ""              # Optional proxy auth username / 代理用户名
 # proxy_password = ""              # Optional proxy auth password / 代理密码
@@ -1736,6 +1742,7 @@ app_secret = "your-feishu-app-secret"
 #                           # Resuming uses the session's saved directory; new sessions still use work_dir.
 #                           # /shell, /diff and /show follow that directory; /dir and /status display it.
 #                           # Subagent/archived sessions stay hidden; filter_external_sessions still applies.
+#                           # Also controls the directory scope of Telegram topic_sync_chat_id discovery.
 #                           # 设为 true 可列出并切换当前 Codex 配置目录中所有工作目录的会话。
 #                           # 恢复时使用会话保存的目录，新会话仍使用 work_dir；子代理和归档会话不显示。
 #                           # /shell、/diff 和 /show 使用会话目录；/dir 和 /status 显示该目录。

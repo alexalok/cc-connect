@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/chenhg5/cc-connect/core"
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 )
@@ -54,6 +55,16 @@ func (b *rateLimitRetryBot) SendMessage(ctx context.Context, params *tgbot.SendM
 func (b *rateLimitRetryBot) EditMessageText(ctx context.Context, params *tgbot.EditMessageTextParams) (*models.Message, error) {
 	return retryOnRateLimit(ctx, "editMessageText", func() (*models.Message, error) {
 		return b.telegramBot.EditMessageText(ctx, params)
+	})
+}
+
+func (b *rateLimitRetryBot) CreateForumTopic(ctx context.Context, params *tgbot.CreateForumTopicParams) (*models.ForumTopic, error) {
+	creator, ok := b.telegramBot.(forumTopicCreator)
+	if !ok {
+		return nil, core.ErrNotSupported
+	}
+	return retryOnRateLimit(ctx, "createForumTopic", func() (*models.ForumTopic, error) {
+		return creator.CreateForumTopic(ctx, params)
 	})
 }
 

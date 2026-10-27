@@ -359,6 +359,8 @@ type Engine struct {
 	agent                 Agent
 	platforms             []Platform
 	sessions              *SessionManager
+	topicSyncWG           sync.WaitGroup
+	topicSyncBindingMu    sync.RWMutex
 	ctx                   context.Context
 	cancel                context.CancelFunc
 	i18n                  *I18n
@@ -2369,6 +2371,10 @@ func (e *Engine) ExecuteHeartbeat(sessionKey, prompt string, silent bool) error 
 }
 
 func (e *Engine) Start() error {
+	topicWorkers, err := e.prepareSessionTopicSync()
+	if err != nil {
+		return err
+	}
 	var startErrs []error
 	readyCount := 0
 	pendingCount := 0
@@ -2412,6 +2418,10 @@ func (e *Engine) Start() error {
 	}
 
 	e.startObserver()
+	for _, worker := range topicWorkers {
+		e.topicSyncWG.Add(1)
+		go worker.run(e.ctx, &e.topicSyncWG)
+	}
 	return nil
 }
 
@@ -2422,6 +2432,7 @@ func (e *Engine) Stop() error {
 
 	// Cancel first so late lifecycle callbacks observe shutdown immediately.
 	e.cancel()
+	e.topicSyncWG.Wait()
 
 	if e.observeCancel != nil {
 		e.observeCancel()
@@ -2982,6 +2993,13 @@ func (e *Engine) startMessageRecallMonitor(sessionKey string) context.CancelFunc
 }
 
 func (e *Engine) handleMessage(p Platform, msg *Message) {
+	// A remotely created topic can receive input before its creation API
+	// returns. Wait for its initial binding before commands or regular input
+	// can implicitly create a fresh session. Existing conversations proceed.
+	if e.sessions.ActiveSessionID(msg.SessionKey) == "" {
+		e.topicSyncBindingMu.RLock()
+		e.topicSyncBindingMu.RUnlock()
+	}
 	if msg.Recalled {
 		e.handleMessageRecall(p, msg)
 		return
