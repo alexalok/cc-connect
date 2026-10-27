@@ -451,6 +451,13 @@ type UserInputSteerer interface {
 	SteerUserInput(prompt string) (bool, error)
 }
 
+// MessageSteerer appends input to an active turn without starting another turn.
+// False means no input was accepted; the engine can safely queue the message.
+// An error must not be retried automatically because delivery may be uncertain.
+type MessageSteerer interface {
+	SteerMessage(prompt, messageID string, images []ImageAttachment, files []FileAttachment) (bool, error)
+}
+
 // ToolAuthorizer is an optional interface for agents that support dynamic tool authorization.
 type ToolAuthorizer interface {
 	AddAllowedTools(tools ...string) error

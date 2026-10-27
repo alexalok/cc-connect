@@ -74,6 +74,35 @@ func TestCUJ_A8_ImmediateReceiptsDuringStartupAndQueue(t *testing.T) {
 	env.assertReceipts("first", "second")
 }
 
+func TestCUJ_A10_SteerDefaultWithExplicitQueue(t *testing.T) {
+	env := newDispatchEnv(t, "steer")
+	// Start work, queue two follow-ups, then steer the active task. The newer
+	// steering message must not make either older queued follow-up stale.
+	env.send("first", "first task", 1000)
+	env.awaitSends(1)
+	env.send("queued1", "/queue first follow-up", 2000)
+	env.send("queued2", "/queue second follow-up", 3000)
+	env.awaitVisible(env.engine.i18n.T(MsgMessageQueued))
+	env.send("steer", "adjust the current task", 4000)
+	env.awaitVisible(env.engine.i18n.T(MsgMessageSteered))
+	env.assertCalls(1, 1)
+	env.assertReceipts("first", "queued1", "queued2", "steer")
+	env.finish("first answer including adjustment")
+	env.awaitSends(2)
+	env.finish("first follow-up answer")
+	env.awaitSends(3)
+	env.finish("second follow-up answer")
+	env.waitFor("idle", 3*time.Second, func() bool { return !env.engine.sessions.GetOrCreateActive("test:receipt-user").Busy() })
+	env.assertCalls(3, 1)
+	env.session.mu.Lock()
+	sent := append([]string(nil), env.session.sent...)
+	env.session.mu.Unlock()
+	if fmt.Sprint(sent) != "[first task first follow-up second follow-up]" {
+		t.Fatalf("queued turns reordered or dropped: %v", sent)
+	}
+	env.assertReceipts("first", "queued1", "queued2", "steer")
+}
+
 // psSupplementSession echoes the actual supplement while leaving the initial
 // task open. The engine still owns all command routing and turn completion.
 type psSupplementSession struct {
