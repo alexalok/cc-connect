@@ -9,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/chenhg5/cc-connect/core"
 	tgbot "github.com/go-telegram/bot"
@@ -17,6 +19,33 @@ import (
 )
 
 const telegramMaxRichMessageLen = 32768
+
+const richMessageAutoMinLen = 1200
+
+var richBlockPattern = regexp.MustCompile("(?mi)^(?:#{1,6}[ \\t]+\\S|[ \\t]*(?:```|~~~)|[ \\t]*[-+*][ \\t]+\\[[ x]\\]|[ \\t]*\\|?[ \\t]*:?-{3,}:?[ \\t]*\\|[ \\t]*:?-{3,}|[ \\t]*\\$\\$|[ \\t]*\\\\\\[|[ \\t]{2,}(?:[-+*]|[0-9]+[.)])[ \\t]+)")
+var richHTMLPattern = regexp.MustCompile("(?i)<(?:details|table|figure|tg-math|tg-tex|h[1-6])(?:[ >])")
+
+func parseRichMessageOption(value any) (enabled, automatic bool, err error) {
+	switch v := value.(type) {
+	case nil:
+		return false, false, nil
+	case bool:
+		return v, false, nil
+	case string:
+		if strings.EqualFold(strings.TrimSpace(v), "auto") {
+			return true, true, nil
+		}
+	}
+	return false, false, fmt.Errorf("telegram: rich_messages must be false, true, or \"auto\"")
+}
+
+// Automatic mode leaves short conversational replies on the lightweight API.
+// Inline emphasis, links, and inline code already work in regular messages.
+func (p *Platform) useRichMessage(content string) bool {
+	return p.richMessages && (!p.richMessagesAuto ||
+		utf8.RuneCountInString(content) >= richMessageAutoMinLen ||
+		richBlockPattern.MatchString(content) || richHTMLPattern.MatchString(content))
+}
 
 // The pinned Bot API client predates rich messages (Bot API 10.1). Keep the
 // additional request fields here until the client supports them natively.
@@ -65,7 +94,7 @@ func richMessageFallback(err error) bool {
 // tryRichMessage falls back only after an explicit rejection. A timeout or 5xx
 // may occur after delivery, so retrying as a regular message could duplicate it.
 func (p *Platform) tryRichMessage(ctx context.Context, method string, params richMessageParams) (*models.Message, bool, error) {
-	if !p.richMessages {
+	if !p.useRichMessage(params.RichMessage.Markdown) {
 		return nil, false, nil
 	}
 	message, err := retryOnRateLimit(ctx, method, func() (*models.Message, error) {

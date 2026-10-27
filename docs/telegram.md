@@ -154,11 +154,17 @@ to preserve Markdown tables, headings, task lists, formulas, and collapsible sec
 
 ```toml
 [projects.platforms.options]
-rich_messages = true
+rich_messages = "auto"
 ```
 
 Add this option to the existing Telegram options section. It defaults to `false`.
-Rich formatting applies to outgoing replies, mirrored conversation text, messages
+Use `"auto"` for replies of at least 1,200 characters or content with tables,
+headings, task lists, nested lists, fenced code, display formulas, or rich HTML
+blocks such as `<details>`. Short conversational replies, basic lists, links,
+and inline emphasis keep regular formatting. Use `true` to format all replies
+as rich messages, or `false` to keep regular formatting everywhere.
+
+This selection applies to outgoing replies, mirrored conversation text, messages
 with buttons, and live preview edits. Topic routing and reply references are retained.
 The agent's Markdown goes directly to Telegram's Rich Markdown parser; do not escape
 it as MarkdownV2. This requires Bot API 10.1 or later and a compatible Telegram client.

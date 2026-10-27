@@ -1243,6 +1243,7 @@ app_secret = "your-feishu-app-secret"
 #                       # 仅在代理确认接收后添加 👀（Codex app_server）；排队时不标记
 # enable_reactions = false  # Legacy ⚡ on arrival, only when read_receipts = false / 旧版收件表情，仅关闭 read_receipts 时生效
 # rich_messages = false  # Send replies and live edits using Telegram Rich Markdown (Bot API 10.1+).
+#                        # Use "auto" for long/structured replies only, or true for all replies.
 #                        # Preserves tables, headings, lists, formulas, and collapsible sections.
 #                        # 设为 true 使用 Telegram 富文本消息，保留表格、标题、列表、公式和折叠内容。
 # progress_style = "compact"  # Progress rendering: legacy | compact (default). Telegram has no rich card UI,
