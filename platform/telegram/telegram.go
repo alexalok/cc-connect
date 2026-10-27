@@ -112,6 +112,7 @@ type Platform struct {
 	shareSessionInChannel bool
 	enableReactions       bool
 	richMessages          bool
+	richMessagesAuto      bool
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
 	topicRouting          privateTopicRouting
@@ -175,7 +176,10 @@ func New(opts map[string]any) (core.Platform, error) {
 	groupReplyAll, _ := opts["group_reply_all"].(bool)
 	shareSessionInChannel, _ := opts["share_session_in_channel"].(bool)
 	enableReactions, _ := opts["enable_reactions"].(bool)
-	richMessages, _ := opts["rich_messages"].(bool)
+	richMessages, richMessagesAuto, err := parseRichMessageOption(opts["rich_messages"])
+	if err != nil {
+		return nil, err
+	}
 
 	// Default to "compact" so streaming edits work out of the box. Telegram has
 	// no rich card UI, so "card" is normalized to "compact". Users can opt out
@@ -204,6 +208,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		shareSessionInChannel: shareSessionInChannel,
 		enableReactions:       enableReactions,
 		richMessages:          richMessages,
+		richMessagesAuto:      richMessagesAuto,
 		progressStyle:         progressStyle,
 		httpClient:            httpClient,
 	}, nil
@@ -1066,7 +1071,7 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 	if err != nil {
 		return err
 	}
-	if p.richMessages {
+	if p.useRichMessage(content) {
 		return p.sendRichChunks(ctx, bot, rc, content, true, nil)
 	}
 
@@ -1117,7 +1122,7 @@ func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 	if err != nil {
 		return err
 	}
-	if p.richMessages {
+	if p.useRichMessage(content) {
 		return p.sendRichChunks(ctx, bot, rc, content, false, nil)
 	}
 
@@ -1315,7 +1320,7 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 		}
 		rows = append(rows, btns)
 	}
-	if p.richMessages {
+	if p.useRichMessage(content) {
 		return p.sendRichChunks(ctx, bot, rc, content, false, &models.InlineKeyboardMarkup{InlineKeyboard: rows})
 	}
 
