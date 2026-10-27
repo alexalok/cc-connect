@@ -71,6 +71,11 @@ func (e *Engine) steerBusyMessage(p Platform, msg *Message, session *Session, se
 	if !accepted {
 		return false
 	}
+	if msg.OnDelivered != nil {
+		delivered := msg.OnDelivered
+		msg.OnDelivered = nil
+		delivered()
+	}
 	state.mu.Lock()
 	if msg.UserMessageTimeMs > state.lastSteeredUserMessageTimeMs {
 		state.lastSteeredUserMessageTimeMs = msg.UserMessageTimeMs
