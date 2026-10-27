@@ -68,3 +68,53 @@ func TestSessionTopicStatus_SyncsOnlySelectedIdleNativeSession(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionTopicStatus_PreservesQuestionAfterInterveningBridgeTurn(t *testing.T) {
+	for _, mode := range []string{"same session", "replacement session"} {
+		t.Run(mode, func(t *testing.T) {
+			a := &nativeStatusAgent{topicMessageAgent: topicMessageAgent{topicDiscoveryAgent: topicDiscoveryAgent{infos: []AgentSessionInfo{{ID: "native", Summary: "Native"}}}}, status: ConversationFinished}
+			p := &nativeStatusPlatform{topicSyncPlatform: topicSyncPlatform{target: "owner"}}
+			e, w := newTopicSyncTest(t, a, p, filepath.Join(t.TempDir(), "sessions.json"))
+			ctx := context.Background()
+			if err := w.poll(ctx); err != nil {
+				t.Fatal(err)
+			}
+			key := p.keys[0]
+			selected := e.sessions.GetOrCreateActive(key)
+			// The replacement below deliberately reaches the same generation:
+			// checking the session pointer is necessary as well as its counter.
+			gen, _ := selected.TryLock()
+			selected.Unlock(gen)
+			a.read = func() {
+				session := selected
+				if mode == "replacement session" {
+					session = e.sessions.NewSession(key, "")
+					session.SetAgentSessionID("native", a.Name())
+				}
+				turnGen, locked := session.TryLock()
+				if !locked {
+					t.Fatal("intervening turn could not start")
+				}
+				state := &interactiveState{platform: p, replyCtx: key, pendingUserInput: &pendingUserInput{}}
+				e.updateConversationStatusForTurn(state, session, key, turnGen, ConversationFinished)
+				session.Unlock(turnGen)
+			}
+			if err := w.poll(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if p.status != ConversationQuestion {
+				t.Fatalf("native snapshot overwrote the newer bridge question: %s", p.status)
+			}
+			// Later transcript reads identify the bridge-owned turn and emit no
+			// status, so they cannot repair an incorrect earlier publication.
+			a.read = nil
+			a.status = ""
+			if err := w.poll(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if p.status != ConversationQuestion {
+				t.Fatal("pending bridge question disappeared on the next poll")
+			}
+		})
+	}
+}
