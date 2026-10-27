@@ -660,7 +660,12 @@ func (p *Platform) reactToMessage(ctx context.Context, chatID int64, messageID i
 }
 
 func (p *Platform) buildSessionKey(chatID int64, threadID int, userID int64) string {
-	if p.shareSessionInChannel {
+	if p.topicSyncChatID < 0 && chatID == p.topicSyncChatID && threadID != 0 {
+		// Keep persisted topic destinations unambiguous even after sync moves
+		// elsewhere. Zero is a shared-user sentinel, never a Telegram user ID.
+		return fmt.Sprintf("telegram:%d:%d:0", chatID, threadID)
+	}
+	if p.sharedSessionForChat(chatID) {
 		if threadID != 0 {
 			return fmt.Sprintf("telegram:%d:%d", chatID, threadID)
 		}
@@ -670,6 +675,12 @@ func (p *Platform) buildSessionKey(chatID int64, threadID int, userID int64) str
 		return fmt.Sprintf("telegram:%d:%d:%d", chatID, threadID, userID)
 	}
 	return fmt.Sprintf("telegram:%d:%d", chatID, userID)
+}
+
+func (p *Platform) sharedSessionForChat(chatID int64) bool {
+	// A synced group topic represents one native conversation, regardless of
+	// which allowed user replies. Keep other chats' configured session policy.
+	return p.shareSessionInChannel || (p.topicSyncChatID < 0 && chatID == p.topicSyncChatID)
 }
 
 func buildChannelKey(chatID int64, threadID int) string {
