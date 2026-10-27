@@ -287,6 +287,7 @@ func (a *cujTopicDiscoveryAgent) DeleteSession(_ context.Context, id string) err
 }
 
 func TestCUJ_B13_ExternalChatBecomesResumableTopic(t *testing.T) {
+	t.Run("ExternalArchiveRemovesTopic", testCUJExternalTopicArchive)
 	t.Run("ConversationMirrorsAcrossClientsAndRestart", testCUJExternalConversationMirroring)
 	t.Run("ImmediateReplyWaitsForBinding", testCUJExternalTopicImmediateReply)
 	t.Run("DeletedChatStaysDeletedAfterRestart", testCUJExternalTopicDeletion)
