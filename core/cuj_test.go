@@ -3269,3 +3269,30 @@ func TestCUJ_H5_WorkspaceSkillDiscoveryAndInvocation(t *testing.T) {
 	sent := p.getSent()
 	assertWorkspaceSkills(t, sent[len(sent)-1], "b", "a")
 }
+
+// Start work, answer a question after the turn has finished, then stop a new
+// turn. The visible question must survive completion until the user answers.
+func TestCUJ_I6_TopicStatusQuestionSurvivesCompletion(t *testing.T) {
+	e, p, s, send := newStatusEngine(t)
+	send("start task")
+	waitConversationStatus(t, p, ConversationWorking)
+	s.events <- Event{Type: EventUserInputRequest, RequestID: "q", Questions: testQuestions()}
+	waitConversationStatus(t, p, ConversationQuestion)
+	s.events <- Event{Type: EventResult, Content: "Independent work finished", Done: true}
+	waitAsyncInput(t, func() bool { return !e.sessions.GetOrCreateActive("status:user").Busy() })
+	if p.lastStatus() != ConversationQuestion {
+		t.Fatalf("pending question hidden by completion: %s", p.lastStatus())
+	}
+	s.mu.Lock()
+	s.active = false
+	s.mu.Unlock()
+	send("2")
+	waitConversationStatus(t, p, ConversationWorking)
+	s.events <- Event{Type: EventResult, Content: "All finished", Done: true}
+	waitConversationStatus(t, p, ConversationFinished)
+	waitAsyncInput(t, func() bool { return !e.sessions.GetOrCreateActive("status:user").Busy() })
+	send("another task")
+	waitConversationStatus(t, p, ConversationWorking)
+	send("/stop")
+	waitConversationStatus(t, p, ConversationStopped)
+}
