@@ -405,3 +405,37 @@ Make sure Group Privacy mode is disabled. In BotFather: `/mybots` → select bot
 - [Slack Setup](./slack.md)
 - [Discord Setup](./discord.md)
 - [Back to README](../README.md)
+
+## Topic status icons
+
+Enable `topic_status_icons = true` in `[projects.platforms.options]` to show
+agent turn status in private-chat topics and forum topics. Icons update as the
+bridge processes turns; existing inactive topics are not retroactively labeled:
+
+| Icon | Meaning |
+| --- | --- |
+| ⚡ | Working |
+| ❓ | An answer is needed |
+| 👀 | Approval is needed |
+| ✅ | Turn finished |
+| ❗ | Failed or timed out |
+| 🏁 | Stopped |
+
+The bot needs topic-management rights in groups. Topics retain their names.
+An unanswered structured question keeps the question icon even if independent
+work finishes. Questions written only as ordinary prose cannot be detected
+reliably. Finished means a turn ended; it does not mean the response was read.
+
+Each icon can be customized with `topic_status_<status>_emoji`, where status is
+`working`, `question`, `approval`, `finished`, `failed`, or `stopped`. Choose an
+emoji in Telegram's `getForumTopicIconStickers` catalog. Updates are coalesced,
+serialized, and retried after rate limits without delaying chat messages.
+
+The Bot API cannot reorder topics. Telegram's MTProto API can reorder pinned
+topics through a logged-in user account, subject to Telegram's pin limit.
+
+When Codex conversation mirroring is enabled, imported topics also use local
+turn-start, completion, interruption and error events. Structured input requests
+are shown while awaiting the next user input. This does not resume the native
+chat or mark its messages as read. Native approval dialogs that are not persisted
+in the transcript remain visible in their originating client.

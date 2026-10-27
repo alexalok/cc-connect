@@ -30,6 +30,7 @@ func (e *Engine) showAsyncUserInput(state *interactiveState, p Platform, replyCt
 	state.mu.Lock()
 	state.pendingUserInput = pending
 	state.mu.Unlock()
+	e.updateConversationStatus(state, "")
 	e.sendAskQuestionPrompt(p, replyCtx, pending.questions, 0, pending.id)
 }
 
@@ -110,6 +111,7 @@ func (e *Engine) handleAsyncUserInput(p Platform, msg *Message, content, key str
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
 		return content, true
 	}
+	e.updateConversationStatus(state, "")
 	e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", question.Question, answer))
 	if steered {
 		onDelivered()
