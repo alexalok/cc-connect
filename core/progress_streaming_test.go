@@ -160,3 +160,50 @@ func TestProgressStreamingCardPreservesReplyFooter(t *testing.T) {
 		})
 	}
 }
+
+func TestProgressStreamingCardSuppressesDuplicateSideChannelAnswer(t *testing.T) {
+	for _, mode := range []string{"progress", "footer", "streamed", "different", "fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			p := &progressStreamPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+			if mode == "fallback" {
+				p.finalErr = errors.New("message to edit not found")
+			}
+			agent := &stubReplyFooterAgent{stubModelModeAgent: stubModelModeAgent{model: "test-model"}, workDir: t.TempDir()}
+			e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+			e.SetReplyFooterEnabled(mode == "footer")
+			key := "test:side-progress"
+			session := e.sessions.GetOrCreateActive(key)
+			as := newControllableSession("side-progress")
+			state := &interactiveState{agentSession: as, platform: p, replyCtx: "ctx", agent: agent}
+			e.interactiveStates[key] = state
+			sideText := "Report delivered."
+			if err := e.SendToSessionWithAttachments(key, sideText, nil, nil, nil, false); err != nil {
+				t.Fatal(err)
+			}
+			as.events <- Event{Type: EventThinking, Content: "Checking report", PublicSummary: true}
+			final := sideText
+			if mode == "different" {
+				final = "Additional summary."
+			}
+			if mode == "streamed" {
+				as.events <- Event{Type: EventText, Content: sideText}
+			}
+			as.events <- Event{Type: EventResult, Content: final, Done: true}
+			e.processInteractiveEvents(state, session, e.sessions, key, "message", time.Now(), nil, nil, state.replyCtx, 0)
+			sent := p.getSent()
+			all := strings.Join(sent, "\n")
+			if strings.Count(all, sideText) != 1 {
+				t.Fatalf("side-channel answer duplicated: %#v", sent)
+			}
+			if !strings.Contains(all, "Checking report") {
+				t.Fatalf("progress was lost: %#v", sent)
+			}
+			if mode == "footer" && (!strings.Contains(sent[len(sent)-1], "</progress>*") || strings.Count(all, "test-model") != 1) {
+				t.Fatalf("footer was lost or duplicated: %#v", sent)
+			}
+			if mode == "different" && !strings.Contains(all, final) {
+				t.Fatalf("different final answer was suppressed: %#v", sent)
+			}
+		})
+	}
+}

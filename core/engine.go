@@ -6601,6 +6601,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				if isSilent {
 					cardBody = strings.TrimRight(cardAnswerText.String(), " \t\r\n")
 				} else if _, ok := streamCard.(ProgressStreamingCard); ok {
+					if suppressDuplicate {
+						cardBody = strings.TrimSpace(strings.TrimPrefix(fullResponse, baseResponse))
+					}
 					cardBody = appendReplyFooter(cardBody, statusFooter)
 				}
 				finalContent := cardContent(cardBody)
@@ -6608,7 +6611,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					slog.Error("streaming card finalize failed", "error", err)
 					// Fallback: send the response as a normal message — but never
 					// for a silent reply, which has no deliverable content.
-					if !isSilent && !errors.Is(err, ErrDeliveryUncertain) {
+					if !isSilent && cardBody != "" && !errors.Is(err, ErrDeliveryUncertain) {
 						for _, chunk := range SplitMessageCodeFenceAware(cardBody, maxPlatformMessageLen) {
 							if err := sendWorkspaceWithError(p, replyCtx, chunk); err != nil {
 								return

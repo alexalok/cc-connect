@@ -351,3 +351,104 @@ func TestTurnCardTrailingFlushStopsAfterFinalizeOrCancellation(t *testing.T) {
 		})
 	}
 }
+
+type turnEditErrorBot struct {
+	telegramBot
+	err error
+}
+
+func (b *turnEditErrorBot) EditMessageText(context.Context, *tgbot.EditMessageTextParams) (*models.Message, error) {
+	return nil, b.err
+}
+
+func TestTurnCardDefinitiveEditRejectionsAllowFallback(t *testing.T) {
+	for _, regular := range []bool{false, true} {
+		for _, kind := range []string{"missing", "forbidden", "transport", "server"} {
+			t.Run(fmt.Sprintf("regular=%v/%s", regular, kind), func(t *testing.T) {
+				p, bot := richTestPlatform(t, func(req *http.Request) (*http.Response, error) {
+					if strings.HasSuffix(req.URL.Path, "/sendRichMessage") {
+						return richResponse(200, `{"ok":true,"result":{"message_id":88}}`), nil
+					}
+					switch kind {
+					case "missing":
+						return richResponse(400, `{"ok":false,"error_code":400,"description":"Bad Request: message to edit not found"}`), nil
+					case "forbidden":
+						return richResponse(403, `{"ok":false,"error_code":403,"description":"Forbidden"}`), nil
+					case "server":
+						return richResponse(500, `{"ok":false,"error_code":500,"description":"Internal Server Error"}`), nil
+					default:
+						return nil, errors.New("connection lost")
+					}
+				})
+				editErr := errors.New("connection lost")
+				if kind == "missing" {
+					editErr = fmt.Errorf("%w, message to edit not found", tgbot.ErrorBadRequest)
+				}
+				if kind == "forbidden" {
+					editErr = tgbot.ErrorForbidden
+				}
+				p.bot = &turnEditErrorBot{telegramBot: bot, err: editErr}
+				c := &turnCard{p: p, rc: replyContext{chatID: 42}, regular: regular}
+				if err := c.AppendProgress(context.Background(), core.ProgressCardEntry{Kind: core.ProgressEntryThinking, Text: "Working"}); err != nil {
+					t.Fatal(err)
+				}
+				err := c.Finalize(context.Background(), "Final answer")
+				uncertain := kind == "transport" || kind == "server"
+				if err == nil || errors.Is(err, core.ErrDeliveryUncertain) != uncertain {
+					t.Fatalf("edit error=%v, want uncertain=%v", err, uncertain)
+				}
+			})
+		}
+	}
+}
+
+func TestTurnCardUnnamedToolResultsRetainNamesAndOutcomes(t *testing.T) {
+	p, _ := richTestPlatform(t, func(*http.Request) (*http.Response, error) {
+		return richResponse(200, `{"ok":true,"result":{"message_id":88}}`), nil
+	})
+	c := &turnCard{p: p, rc: replyContext{chatID: 42}}
+	success, failure := true, false
+	exit := 1
+	entries := []core.ProgressCardEntry{
+		{Kind: core.ProgressEntryToolUse, Tool: "Read"},
+		{Kind: core.ProgressEntryToolUse, Tool: "Bash"},
+		{Kind: core.ProgressEntryToolResult, Success: &failure, ExitCode: &exit},
+		{Kind: core.ProgressEntryToolResult, Success: &success},
+	}
+	for _, entry := range entries {
+		if err := c.AppendProgress(context.Background(), entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.Finalize(context.Background(), "Done"); err != nil {
+		t.Fatal(err)
+	}
+	text := c.pages[0].text
+	for _, want := range []string{"✓ `Read`", "✗ `Bash`", "Done"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "🔧") {
+		t.Fatalf("completed tools still shown as running: %s", text)
+	}
+}
+
+func TestTurnCardEmptyFinalRemovesAnswerOnlyPreview(t *testing.T) {
+	p, bot := richTestPlatform(t, func(*http.Request) (*http.Response, error) {
+		return richResponse(200, `{"ok":true,"result":{"message_id":88}}`), nil
+	})
+	c := &turnCard{p: p, rc: replyContext{chatID: 42}}
+	if err := c.Update(context.Background(), "Already delivered elsewhere"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Finalize(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	bot.mu.Lock()
+	deletions := bot.deleteMessageCalls
+	bot.mu.Unlock()
+	if deletions != 1 {
+		t.Fatalf("answer-only preview survived suppressed final: deletions=%d", deletions)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -93,7 +94,10 @@ func (c *turnCard) AppendProgress(ctx context.Context, entry core.ProgressCardEn
 	}
 	if entry.Kind == core.ProgressEntryToolResult {
 		for i := len(c.entries) - 1; i >= 0; i-- {
-			if c.entries[i].Kind == core.ProgressEntryToolUse && c.entries[i].Tool == entry.Tool {
+			if c.entries[i].Kind == core.ProgressEntryToolUse && (entry.Tool == "" || c.entries[i].Tool == entry.Tool) {
+				// Some adapters report only an outcome. Match the latest pending
+				// use, as other progress renderers do, and keep its tool name.
+				entry.Tool = c.entries[i].Tool
 				c.entries[i] = entry
 				break
 			}
@@ -280,6 +284,9 @@ func (c *turnCard) flush(ctx context.Context, final bool) error {
 	c.cancelPendingFlush()
 	c.last = time.Now()
 	pages := c.renderPages()
+	if final && len(pages) == 0 && len(c.pages) > 0 {
+		return c.deleteEmptyPreview(ctx)
+	}
 	if !final && len(pages) > 1 {
 		pages = pages[:1]
 	}
@@ -367,12 +374,10 @@ func (c *turnCard) writePage(ctx context.Context, index int, text string) error 
 		err = errors.New("turn response missing message ID")
 	}
 	if err != nil {
-		var rateLimit *tgbot.TooManyRequestsError
-		if errors.As(err, &rateLimit) {
-			// A 429 confirms that nothing was delivered. A later event or
-			// finalization must be allowed to retry even if this retry budget
-			// or request deadline was exhausted.
-			return fmt.Errorf("telegram: turn rate limited: %s", core.RedactToken(err.Error(), c.p.token))
+		if turnWriteRejected(err) {
+			// A rejection confirms that nothing was delivered. Keep sends
+			// retryable and let the engine replace a deleted edit target.
+			return fmt.Errorf("telegram: turn message rejected: %s", core.RedactToken(err.Error(), c.p.token))
 		}
 		if page.id == 0 {
 			// A failed send has no safe edit target. Do not duplicate it by
@@ -393,6 +398,52 @@ func (c *turnCard) writePage(ctx context.Context, index int, text string) error 
 	} else {
 		c.pages = append(c.pages, page)
 	}
+	return nil
+}
+
+// Only explicit Bot API rejections prove non-delivery. Transport errors,
+// malformed responses, and server errors remain ambiguous.
+func turnWriteRejected(err error) bool {
+	var apiErr *richMessageAPIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.code {
+		case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+			http.StatusNotFound, http.StatusConflict, http.StatusTooManyRequests:
+			return true
+		}
+	}
+	var rateLimit *tgbot.TooManyRequestsError
+	var migration *tgbot.MigrateError
+	if errors.As(err, &rateLimit) || errors.As(err, &migration) {
+		return true
+	}
+	for _, rejection := range []error{tgbot.ErrorBadRequest, tgbot.ErrorUnauthorized, tgbot.ErrorForbidden, tgbot.ErrorNotFound, tgbot.ErrorConflict, tgbot.ErrorTooManyRequests} {
+		if errors.Is(err, rejection) {
+			return true
+		}
+	}
+	return false
+}
+
+// A side-channel delivery can make a streamed answer redundant. If no public
+// progress or footer remains, remove that preview instead of leaving its stale
+// answer visible. Called with c.mu held after canceling the pending flush.
+func (c *turnCard) deleteEmptyPreview(ctx context.Context) error {
+	bot, err := c.p.connectedBot("delete empty turn preview")
+	if err != nil {
+		return err
+	}
+	for _, page := range c.pages {
+		requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		_, err := retryOnRateLimit(requestCtx, "delete empty turn preview", func() (bool, error) {
+			return bot.DeleteMessage(requestCtx, &tgbot.DeleteMessageParams{ChatID: c.rc.chatID, MessageID: page.id})
+		})
+		cancel()
+		if err != nil && !(errors.Is(err, tgbot.ErrorBadRequest) && strings.Contains(err.Error(), "message to delete not found")) {
+			return fmt.Errorf("telegram: delete empty turn preview: %s", core.RedactToken(err.Error(), c.p.token))
+		}
+	}
+	c.pages = nil
 	return nil
 }
 

@@ -3,10 +3,11 @@ package telegram
 import (
 	"context"
 	"fmt"
-	tgbot "github.com/go-telegram/bot"
 	"net/http"
 	"strings"
 	"testing"
+
+	tgbot "github.com/go-telegram/bot"
 )
 
 func TestRichMessagesRestoreTypingAfterSendAndEdit(t *testing.T) {
