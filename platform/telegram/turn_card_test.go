@@ -452,3 +452,34 @@ func TestTurnCardEmptyFinalRemovesAnswerOnlyPreview(t *testing.T) {
 		t.Fatalf("answer-only preview survived suppressed final: deletions=%d", deletions)
 	}
 }
+
+func TestTurnCardMCPResultsCompleteMatchingTools(t *testing.T) {
+	p, _ := richTestPlatform(t, func(*http.Request) (*http.Response, error) {
+		return richResponse(200, `{"ok":true,"result":{"message_id":88}}`), nil
+	})
+	c := &turnCard{p: p, rc: replyContext{chatID: 42}}
+	success, failure := true, false
+	entries := []core.ProgressCardEntry{
+		{Kind: core.ProgressEntryToolUse, Tool: "docs:lookup"},
+		{Kind: core.ProgressEntryToolUse, Tool: "issues:lookup"},
+		{Kind: core.ProgressEntryToolResult, Tool: "docs:lookup", Success: &success},
+		{Kind: core.ProgressEntryToolResult, Tool: "issues:lookup", Success: &failure},
+	}
+	for _, entry := range entries {
+		if err := c.AppendProgress(context.Background(), entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.Finalize(context.Background(), "Done"); err != nil {
+		t.Fatal(err)
+	}
+	text := c.pages[0].text
+	for _, want := range []string{"✓ `docs:lookup`", "✗ `issues:lookup`", "Done"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "🔧") {
+		t.Fatalf("completed MCP tools still shown as running: %s", text)
+	}
+}
