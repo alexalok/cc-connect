@@ -147,6 +147,69 @@ Notes:
 - Leave `proxy_username` and `proxy_password` empty when the proxy does not require authentication.
 - The proxy only affects Telegram Bot API requests for this Telegram platform instance.
 
+### 2.2 Rich Message Formatting
+
+Enable Telegram's [rich messages](https://core.telegram.org/bots/api#rich-message-formatting-options)
+to preserve Markdown tables, headings, task lists, formulas, and collapsible sections:
+
+```toml
+[projects.platforms.options]
+rich_messages = "auto"
+```
+
+Add this option to the existing Telegram options section. It defaults to `false`.
+Use `"auto"` for replies of at least 1,200 characters or content with tables,
+headings, task lists, nested lists, fenced code, display formulas, or rich HTML
+blocks such as `<details>`. Short conversational replies, basic lists, links,
+and inline emphasis keep regular formatting. Use `true` to format all replies
+as rich messages, or `false` to keep regular formatting everywhere.
+
+This selection applies to outgoing replies, mirrored conversation text, messages
+with buttons, and live preview edits. Topic routing and reply references are retained.
+The agent's Markdown goes directly to Telegram's Rich Markdown parser; do not escape
+it as MarkdownV2. This requires Bot API 10.1 or later and a compatible Telegram client.
+
+The adapter splits rich messages above 32,768 characters, although the engine may
+split replies into smaller messages before they reach the adapter. An explicit
+formatting rejection or an unavailable rich-message endpoint falls back to regular
+formatting. Rate limits respect `retry_after`; network and server errors are returned
+without resending as regular messages to avoid duplicate delivery.
+
+This option changes outgoing formatting only; it does not add support for receiving
+rich-message content or use Telegram's ephemeral draft API.
+
+#### Collapsible progress and a visible answer
+
+To keep a turn together, add these options to the same section:
+
+```toml
+rich_messages = "auto"
+collapse_progress = true
+collapse_progress_after = 600
+```
+
+The bridge updates one message with public progress summaries followed by the final
+answer. At 600 characters or eight lines, the progress is collapsed under **Read
+more**; shorter progress stays expanded. The answer is always outside that section,
+and retains Rich Markdown tables, lists, and code. The character threshold is
+configurable; `collapse_progress` defaults to `false` and requires rich messages.
+This replaces `progress_style` for interactive turns and respects the display
+settings for thinking and tool messages. Tool progress shows names and outcomes,
+without copying tool arguments or output into the summary.
+
+Only events explicitly marked as public summaries are included. The Codex
+`app_server` adapter marks assistant commentary and public reasoning summaries;
+raw reasoning content is never used as a fallback. Other adapters can opt in by
+marking their public summaries with `Event.PublicSummary`.
+
+All progress is retained for final delivery, including the beginning of long turns.
+If a turn exceeds Telegram's 32,768-character limit, the bridge streams the first
+page and delivers additional pages at completion, with complete collapsed sections
+and the answer at the end. Explicit rich-formatting rejection reflows the content
+into regular messages without disclosure markup. A network failure with uncertain
+delivery does not trigger duplicate sends. Permission prompts remain separate so
+the user can act on them immediately.
+
 ### Button text limits
 
 Button labels are limited to 32 Unicode characters by default. If any label
@@ -157,7 +220,10 @@ selecting one still sends the original choice. Short labels stay unchanged.
 Set `button_text_limit = 32` in the existing `[projects.platforms.options]`
 section to adjust the limit (minimum 16). Full choices remain available even
 when their text spans several messages; oversized button messages fall back to
-plain text so splitting cannot alter literal choices.
+plain text so splitting cannot alter literal choices. Rich prompts keep tables and
+code formatted while numbered choices remain literal. If their generated rich
+content exceeds the rich-message limit, the message uses the same exact-text
+plain fallback rather than splitting the choice markup.
 
 ---
 

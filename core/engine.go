@@ -5676,6 +5676,30 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	var cardToolCalls []cardToolEntry  // track tool calls for card content
 	var cardThinkingText string        // latest thinking text
 	var cardAnswerText strings.Builder // accumulated answer text
+	cardContent := func(answer string) string {
+		if _, ok := streamCard.(ProgressStreamingCard); ok {
+			return workspaceRenderer(answer)
+		}
+		return buildCardContent(cardThinkingText, cardToolCalls, answer)
+	}
+	appendCardProgress := func(entry ProgressCardEntry) {
+		card := streamCard.(ProgressStreamingCard)
+		entry.Text = workspaceRenderer(entry.Text)
+		if err := card.AppendProgress(e.ctx, entry); err != nil {
+			slog.Warn("streaming progress update failed", "error", err)
+		}
+	}
+	finalizeProgressCard := func(answer string) bool {
+		card, ok := streamCard.(ProgressStreamingCard)
+		if !ok {
+			return false
+		}
+		err := card.Finalize(e.ctx, workspaceRenderer(answer))
+		if err != nil {
+			slog.Warn("streaming progress finalization failed", "error", err)
+		}
+		return err == nil || errors.Is(err, ErrDeliveryUncertain)
+	}
 
 	if scp, ok := state.platform.(StreamingCardPlatform); ok {
 		if sc, err := scp.CreateStreamingCard(e.ctx, state.replyCtx); err != nil {
@@ -5728,6 +5752,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		case <-stopCh:
 			status = ConversationStopped
 			sp.discard()
+			finalizeProgressCard(e.i18n.T(MsgExecutionStopped))
 			return
 		case event, ok = <-events:
 			if !ok {
@@ -5746,7 +5771,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				state.mu.Lock()
 				p := state.platform
 				state.mu.Unlock()
-				e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
+				message := fmt.Sprintf(e.i18n.T(MsgError), err)
+				if !finalizeProgressCard(message) {
+					e.send(p, replyCtx, message)
+				}
 				return
 			}
 			continue
@@ -5760,7 +5788,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			state.eventsNeedResync = true
 			p := state.platform
 			state.mu.Unlock()
-			e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), "agent session timed out (no response)"))
+			message := fmt.Sprintf(e.i18n.T(MsgError), "agent session timed out (no response)")
+			if !finalizeProgressCard(message) {
+				e.send(p, replyCtx, message)
+			}
 			e.cleanupInteractiveState(sessionKey, state)
 			return
 		case <-turnDeadlineCh:
@@ -5773,8 +5804,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			state.mu.Lock()
 			p := state.platform
 			state.mu.Unlock()
-			e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError),
-				fmt.Sprintf("agent turn exceeded maximum time (%v), stopping", e.maxTurnTime)))
+			message := fmt.Sprintf(e.i18n.T(MsgError), fmt.Sprintf("agent turn exceeded maximum time (%v), stopping", e.maxTurnTime))
+			if !finalizeProgressCard(message) {
+				e.send(p, replyCtx, message)
+			}
 
 			// Two-phase shutdown: first try a graceful stop so the agent can
 			// write its final state before dying (preserves --resume ability).
@@ -5891,6 +5924,12 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			if isEllipsisOnly(event.Content) {
 				break
 			}
+			if card, ok := streamCard.(ProgressStreamingCard); ok && !card.Failed() {
+				if e.display.ThinkingMessages && event.PublicSummary && event.Content != "" {
+					appendCardProgress(ProgressCardEntry{Kind: ProgressEntryThinking, Text: event.Content})
+				}
+				break
+			}
 			if hasRichCard {
 				// When thinking messages are suppressed, skip card creation.
 				if !e.display.ThinkingMessages {
@@ -5980,6 +6019,13 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 		case EventToolUse:
+			if card, ok := streamCard.(ProgressStreamingCard); ok && !card.Failed() {
+				toolCount++
+				if e.display.ToolMessages {
+					appendCardProgress(ProgressCardEntry{Kind: ProgressEntryToolUse, Tool: event.ToolName})
+				}
+				break
+			}
 			toolCount++
 			if hasRichCard {
 				// When tool messages are suppressed, skip card updates on tool events.
@@ -6110,6 +6156,13 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 		case EventToolResult:
+			if card, ok := streamCard.(ProgressStreamingCard); ok && !card.Failed() {
+				if e.display.ToolMessages {
+					appendCardProgress(ProgressCardEntry{Kind: ProgressEntryToolResult, Tool: event.ToolName,
+						Status: event.ToolStatus, ExitCode: event.ToolExitCode, Success: event.ToolSuccess})
+				}
+				break
+			}
 			if e.display.ToolMessages {
 				result := strings.TrimSpace(event.ToolResult)
 				if result == "" {
@@ -6183,7 +6236,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						} else {
 							cardAnswerText.WriteString(content)
 						}
-						_ = streamCard.Update(e.ctx, buildCardContent(cardThinkingText, cardToolCalls, cardAnswerText.String()))
+						if err := streamCard.Update(e.ctx, cardContent(cardAnswerText.String())); err != nil {
+							slog.Warn("streaming answer update failed", "error", err)
+						}
 					}
 					handledByStreamCard = true
 				}
@@ -6320,7 +6375,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// Flush accumulated text segment before permission prompt
 			previewActive := sp.canPreview()
 			if len(textParts) > segmentStart {
-				if !previewActive {
+				if !previewActive && (streamCard == nil || streamCard.Failed()) {
 					segment := strings.Join(textParts[segmentStart:], "")
 					if segment != "" {
 						for _, chunk := range SplitMessageCodeFenceAware(segment, maxPlatformMessageLen) {
@@ -6653,14 +6708,19 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				cardBody := fullResponse
 				if isSilent {
 					cardBody = strings.TrimRight(cardAnswerText.String(), " \t\r\n")
+				} else if _, ok := streamCard.(ProgressStreamingCard); ok {
+					if suppressDuplicate {
+						cardBody = strings.TrimSpace(strings.TrimPrefix(fullResponse, baseResponse))
+					}
+					cardBody = appendReplyFooter(cardBody, statusFooter)
 				}
-				finalContent := buildCardContent(cardThinkingText, cardToolCalls, cardBody)
+				finalContent := cardContent(cardBody)
 				if err := streamCard.Finalize(e.ctx, finalContent); err != nil {
-					slog.Error("streaming card finalize failed, sending fallback", "error", err)
+					slog.Error("streaming card finalize failed", "error", err)
 					// Fallback: send the response as a normal message — but never
 					// for a silent reply, which has no deliverable content.
-					if !isSilent {
-						for _, chunk := range SplitMessageCodeFenceAware(fullResponse, maxPlatformMessageLen) {
+					if !isSilent && cardBody != "" && !errors.Is(err, ErrDeliveryUncertain) {
+						for _, chunk := range SplitMessageCodeFenceAware(cardBody, maxPlatformMessageLen) {
 							if err := sendWorkspaceWithError(p, replyCtx, chunk); err != nil {
 								return
 							}
@@ -6927,6 +6987,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				queuedRenderer := func(content string) string {
 					return e.renderOutgoingContentForWorkspace(queued.platform, content, workspaceDir)
 				}
+				workspaceRenderer = queuedRenderer
 				sp = newStreamPreview(e.streamPreview, queued.platform, queued.replyCtx, e.ctx, queuedRenderer)
 				cp = newCompactProgressWriter(e.ctx, queued.platform, queued.replyCtx, e.agent.Name(), e.i18n.CurrentLang(), queuedRenderer)
 
@@ -7035,7 +7096,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						break
 					}
 				}
-				e.send(p, replyCtx, userMsg)
+				if !finalizeProgressCard(userMsg) {
+					e.send(p, replyCtx, userMsg)
+				}
 			}
 			// Only drop queued messages if the agent session is dead.
 			// Some agents (e.g. Codex) emit EventError for per-turn failures
@@ -7090,6 +7153,9 @@ channelClosed:
 			Content:    fullResponse,
 		})
 
+		if finalizeProgressCard(fullResponse) {
+			return
+		}
 		if toolCount > 0 && segmentStart > 0 {
 			sp.discard()
 			if segmentStart < len(textParts) {

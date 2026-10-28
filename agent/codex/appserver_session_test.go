@@ -30,6 +30,67 @@ func TestAppServerSession_ApplyThreadRuntimeState(t *testing.T) {
 	}
 }
 
+func TestAppServerSession_ProgressContainsOnlyPublicSummaries(t *testing.T) {
+	s := &appServerSession{events: make(chan core.Event, 4)}
+	s.handleItemCompleted(map[string]any{"type": "reasoning", "content": []any{"private raw reasoning"}})
+	if len(s.events) != 0 {
+		t.Fatal("raw reasoning was emitted as progress")
+	}
+	s.handleItemCompleted(map[string]any{"type": "reasoning", "summary": []any{"Public summary"}, "content": []any{"private raw reasoning"}})
+	event := <-s.events
+	if event.Type != core.EventThinking || !event.PublicSummary || event.Content != "Public summary" {
+		t.Fatalf("unexpected summary: %+v", event)
+	}
+	s.pendingMsgs = []string{"Checking the tests."}
+	s.flushPendingAsThinking()
+	event = <-s.events
+	if !event.PublicSummary || event.Content != "Checking the tests." {
+		t.Fatalf("commentary not marked as public: %+v", event)
+	}
+}
+
+func TestAppServerSession_MCPToolOutcomesMatchStartedNames(t *testing.T) {
+	cases := []struct {
+		server, tool, name, status string
+		success                    bool
+	}{
+		{"docs", "lookup", "docs:lookup", "completed", true},
+		{"issues", "lookup", "issues:lookup", "failed", false},
+		{"", "search", "search", "completed", true},
+		{"legacy", "", "legacy", "failed", false},
+		{"", "", "MCP", "completed", true},
+	}
+	s := &appServerSession{events: make(chan core.Event, len(cases)*2)}
+	for _, tc := range cases {
+		s.handleItemStarted(map[string]any{"type": "mcpToolCall", "server": tc.server, "tool": tc.tool})
+	}
+	pending := make(map[string]bool)
+	for _, tc := range cases {
+		event := <-s.events
+		if event.Type != core.EventToolUse || event.ToolName != tc.name {
+			t.Fatalf("MCP start = %+v, want tool use %q", event, tc.name)
+		}
+		pending[event.ToolName] = true
+	}
+	// Results can arrive out of order, including equal tool names on
+	// different servers. Both events must retain the same qualified name.
+	for i := len(cases) - 1; i >= 0; i-- {
+		tc := cases[i]
+		s.handleItemCompleted(map[string]any{"type": "mcpToolCall", "server": tc.server, "tool": tc.tool, "status": tc.status})
+		event := <-s.events
+		if event.Type != core.EventToolResult || event.ToolName != tc.name || !pending[event.ToolName] {
+			t.Fatalf("MCP result = %+v, want pending tool %q", event, tc.name)
+		}
+		if event.ToolSuccess == nil || *event.ToolSuccess != tc.success || event.ToolStatus != tc.status {
+			t.Fatalf("MCP outcome = %+v, want success=%v status=%q", event, tc.success, tc.status)
+		}
+		delete(pending, event.ToolName)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("MCP tools still pending: %v", pending)
+	}
+}
+
 func TestAppServerSession_HandleRateLimitsUpdatedCachesUsage(t *testing.T) {
 	s := &appServerSession{}
 	raw, err := json.Marshal(appServerRateLimitsResponse{

@@ -1225,10 +1225,8 @@ func (s *appServerSession) handleItemStarted(item map[string]any) {
 		s.emit(core.Event{Type: core.EventToolUse, ToolName: "Bash", ToolInput: command})
 
 	case "mcpToolCall":
-		server, _ := item["server"].(string)
-		tool, _ := item["tool"].(string)
-		name := strings.Trim(strings.Join([]string{server, tool}, ":"), ":")
-		s.emit(core.Event{Type: core.EventToolUse, ToolName: "MCP", ToolInput: name + "\n" + appServerJSON(item["arguments"])})
+		name := appServerMCPToolName(item)
+		s.emit(core.Event{Type: core.EventToolUse, ToolName: name, ToolInput: name + "\n" + appServerJSON(item["arguments"])})
 
 	case "webSearch":
 		query, _ := item["query"].(string)
@@ -1253,7 +1251,7 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 	case "reasoning":
 		text := appServerReasoningText(item)
 		if text != "" {
-			s.emit(core.Event{Type: core.EventThinking, Content: text})
+			s.emit(core.Event{Type: core.EventThinking, Content: text, PublicSummary: true})
 		}
 
 	case "agentMessage":
@@ -1288,7 +1286,7 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 		})
 
 	case "mcpToolCall":
-		tool, _ := item["tool"].(string)
+		tool := appServerMCPToolName(item)
 		status, _ := item["status"].(string)
 		result := appServerJSON(item["result"])
 		if errText := appServerJSON(item["error"]); strings.TrimSpace(errText) != "" && result == "" {
@@ -1335,15 +1333,8 @@ func appServerReasoningText(item map[string]any) string {
 			}
 		}
 	}
-	if len(parts) == 0 {
-		if content, ok := item["content"].([]any); ok {
-			for _, entry := range content {
-				if text, ok := entry.(string); ok && strings.TrimSpace(text) != "" {
-					parts = append(parts, text)
-				}
-			}
-		}
-	}
+	// The content field may contain raw reasoning. Only the explicitly public
+	// summary is suitable for display on a messaging platform.
 	return strings.Join(parts, "\n")
 }
 
@@ -1366,6 +1357,18 @@ func appServerDynamicToolText(raw any) string {
 		return appServerJSON(raw)
 	}
 	return strings.Join(parts, "\n")
+}
+
+// Use the same qualified identity for MCP starts and outcomes so progress
+// renderers can finish the correct entry when different servers share a tool name.
+func appServerMCPToolName(item map[string]any) string {
+	server, _ := item["server"].(string)
+	tool, _ := item["tool"].(string)
+	name := strings.Trim(strings.Join([]string{server, tool}, ":"), ":")
+	if name == "" {
+		return "MCP"
+	}
+	return name
 }
 
 func appServerToolSuccess(status string, exitCode *int) bool {
@@ -1588,7 +1591,7 @@ func (s *appServerSession) flushPendingAsThinking() {
 
 	for _, text := range msgs {
 		if strings.TrimSpace(text) != "" {
-			s.emit(core.Event{Type: core.EventThinking, Content: text})
+			s.emit(core.Event{Type: core.EventThinking, Content: text, PublicSummary: true})
 		}
 	}
 }

@@ -112,6 +112,10 @@ type Platform struct {
 	shareSessionInChannel bool
 	enableReactions       bool
 	readReceipts          bool
+	richMessages          bool
+	richMessagesAuto      bool
+	collapseProgress      bool
+	collapseProgressAfter int
 	buttonTextLimit       int
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
@@ -187,6 +191,14 @@ func New(opts map[string]any) (core.Platform, error) {
 	if v, ok := opts["read_receipts"].(bool); ok {
 		readReceipts = v
 	}
+	richMessages, richMessagesAuto, err := parseRichMessageOption(opts["rich_messages"])
+	if err != nil {
+		return nil, err
+	}
+	collapseProgress, collapseProgressAfter, err := parseCollapseProgressOptions(opts, richMessages)
+	if err != nil {
+		return nil, err
+	}
 
 	buttonTextLimit, err := parseButtonTextLimit(opts)
 	if err != nil {
@@ -220,6 +232,10 @@ func New(opts map[string]any) (core.Platform, error) {
 		shareSessionInChannel: shareSessionInChannel,
 		enableReactions:       enableReactions,
 		readReceipts:          readReceipts,
+		richMessages:          richMessages,
+		richMessagesAuto:      richMessagesAuto,
+		collapseProgress:      collapseProgress,
+		collapseProgressAfter: collapseProgressAfter,
 		buttonTextLimit:       buttonTextLimit,
 		progressStyle:         progressStyle,
 		httpClient:            httpClient,
@@ -1104,6 +1120,10 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 
 	defer p.refreshTyping(rc)
 
+	if p.useRichMessage(content) {
+		return p.sendRichChunks(ctx, bot, rc, content, true, nil)
+	}
+
 	html := core.MarkdownToSimpleHTML(content)
 	params := &tgbot.SendMessageParams{
 		ChatID:          rc.chatID,
@@ -1153,6 +1173,10 @@ func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 	}
 
 	defer p.refreshTyping(rc)
+
+	if p.useRichMessage(content) {
+		return p.sendRichChunks(ctx, bot, rc, content, false, nil)
+	}
 
 	html := core.MarkdownToSimpleHTML(content)
 	params := &tgbot.SendMessageParams{
@@ -1350,6 +1374,7 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 
 	defer p.refreshTyping(rc)
 
+	prompt, originalButtons := content, buttons
 	content, html, buttons := p.prepareButtonLabels(content, buttons)
 	var rows [][]models.InlineKeyboardButton
 	for _, row := range buttons {
@@ -1358,6 +1383,24 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 			btns = append(btns, models.InlineKeyboardButton{Text: b.Text, CallbackData: b.Data})
 		}
 		rows = append(rows, btns)
+	}
+	if p.useRichMessage(content) {
+		keyboard := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+		if content == prompt {
+			return p.sendRichChunks(ctx, bot, rc, content, false, keyboard)
+		}
+		// Numbered option text is literal, even when the prompt uses Markdown.
+		// Keep its generated HTML intact and retain the original fallback body.
+		richContent := richNumberedButtonContent(prompt, originalButtons, buttons)
+		if utf8.RuneCountInString(richContent) > telegramMaxRichMessageLen {
+			return p.sendChunkedWithButtons(ctx, bot, rc, content, rows)
+		}
+		if _, handled, err := p.tryRichMessage(ctx, "sendRichMessage", richMessageParams{
+			ChatID: rc.chatID, MessageThreadID: rc.threadID,
+			RichMessage: richMessageContent{Markdown: richContent}, ReplyMarkup: keyboard,
+		}); handled {
+			return err
+		}
 	}
 
 	params := &tgbot.SendMessageParams{
@@ -1499,6 +1542,16 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 
 	defer p.refreshTyping(rc)
 
+	if sent, handled, err := p.tryRichMessage(ctx, "sendRichMessage", richMessageParams{
+		ChatID: rc.chatID, MessageThreadID: rc.threadID,
+		RichMessage: richMessageContent{Markdown: content},
+	}); handled {
+		if err != nil {
+			return nil, err
+		}
+		return &telegramPreviewHandle{chatID: rc.chatID, threadID: rc.threadID, messageID: sent.ID}, nil
+	}
+
 	html := core.MarkdownToSimpleHTML(content)
 	params := &tgbot.SendMessageParams{
 		ChatID:          rc.chatID,
@@ -1551,6 +1604,13 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 	}
 
 	defer p.refreshTyping(replyContext{chatID: h.chatID, threadID: h.threadID})
+
+	if _, handled, err := p.tryRichMessage(ctx, "editMessageText", richMessageParams{
+		ChatID: h.chatID, MessageID: h.messageID,
+		RichMessage: richMessageContent{Markdown: content},
+	}); handled {
+		return err
+	}
 
 	html := core.MarkdownToSimpleHTML(content)
 	slog.Debug("telegram: UpdateMessage",
