@@ -4615,9 +4615,9 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		if e.ctx.Err() != nil || !session.canStartTurn(lockGen) || e.interactiveStates[sessionKey] != placeholder {
 			if as != nil {
 				e.interactiveMu.Unlock()
-				if closeErr := as.Close(); closeErr != nil {
-					slog.Warn("close canceled agent startup", "session", sessionKey, "error", closeErr)
-				}
+				// Keep the startup mutex held until teardown has recorded any
+				// unsafe-resume guard, before a replacement worker can start.
+				e.closeAgentSessionWithTimeout(sessionKey, as, p, replyCtx, agent)
 				e.interactiveMu.Lock()
 			}
 			return nil, nil, false

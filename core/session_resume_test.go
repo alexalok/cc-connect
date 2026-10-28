@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResumeFallbackPolicy_PreservesBindingWhenDisabled(t *testing.T) {
@@ -141,6 +142,80 @@ func TestResumeFallbackPolicy_UnsafeResumeRemainsBlockedAcrossRetries(t *testing
 	state = e.getOrCreateInteractiveStateWith(key, p, "ctx", safe, e.sessions, nil, "", 0)
 	if state.agentSession == nil || !reflect.DeepEqual(calls, []string{"", "fresh-id", "safe-id"}) {
 		t.Fatalf("safe existing conversation was blocked by another ID: calls=%q", calls)
+	}
+}
+
+func TestResumeFallbackPolicy_CanceledStartupCloseFailureBlocksReplacement(t *testing.T) {
+	for _, fallback := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fallback=%v", fallback), func(t *testing.T) {
+			started := make(chan struct{})
+			release := make(chan struct{})
+			late := newControllableSession("saved-id")
+			late.closeErr = errors.New("process termination unconfirmed")
+			var calls []string
+			agent := &controllableAgent{startSessionFn: func(_ context.Context, id string) (AgentSession, error) {
+				calls = append(calls, id)
+				if len(calls) == 1 {
+					close(started)
+					<-release
+					return late, nil
+				}
+				return newControllableSession("fresh-id"), nil
+			}}
+			p := &stubPlatformEngine{n: "test"}
+			e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+			t.Cleanup(func() { _ = e.Stop() })
+			e.SetResumeFallbackToNew(fallback)
+			const key = "test:user"
+			session := e.sessions.GetOrCreateActive(key)
+			session.SetAgentSessionID("saved-id", agent.Name())
+			gen, _ := session.TryLock()
+			first := make(chan *interactiveState, 1)
+			go func() {
+				first <- e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "", gen)
+			}()
+			<-started
+			e.cmdStop(p, &Message{SessionKey: key, ReplyCtx: "ctx"})
+			replacementGen, locked := session.TryLock()
+			if !locked {
+				close(release)
+				t.Fatal("stop did not release startup lock")
+			}
+			replacement := make(chan *interactiveState, 1)
+			go func() {
+				replacement <- e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "", replacementGen)
+			}()
+			close(release)
+			select {
+			case state := <-first:
+				if state != nil {
+					t.Fatal("canceled startup was adopted")
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("canceled startup did not finish")
+			}
+			var state *interactiveState
+			select {
+			case state = <-replacement:
+			case <-time.After(3 * time.Second):
+				t.Fatal("replacement did not finish")
+			}
+			wantCalls := []string{"saved-id"}
+			if fallback {
+				wantCalls = append(wantCalls, "")
+				if state == nil || state.agentSession == nil {
+					t.Fatal("fallback did not start a fresh conversation")
+				}
+			} else if state == nil || state.agentSession != nil || state.startFailureMsg != MsgSessionResumeBlocked || session.GetAgentSessionID() != "saved-id" {
+				t.Fatal("strict mode did not preserve and block the unsafe binding")
+			}
+			if !reflect.DeepEqual(calls, wantCalls) {
+				t.Fatalf("resumed an unconfirmed process: starts=%q, want %q", calls, wantCalls)
+			}
+			if !strings.Contains(strings.Join(p.getSent(), "\n"), e.i18n.T(MsgSessionCloseFailed)) {
+				t.Fatal("user was not alerted to failed shutdown")
+			}
+		})
 	}
 }
 
