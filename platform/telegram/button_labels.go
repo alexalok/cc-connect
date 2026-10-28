@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"fmt"
+	"html"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -26,8 +27,9 @@ func parseButtonTextLimit(opts map[string]any) (int, error) {
 
 // prepareButtonLabels keeps full choices readable when a client would truncate
 // their buttons. Number the whole keyboard so its labels match the message in
-// order, preserving callback data and the caller's slices.
-func (p *Platform) prepareButtonLabels(content string, buttons [][]core.ButtonOption) (string, [][]core.ButtonOption) {
+// order, preserving callback data and the caller's slices. Build the HTML body
+// separately so literal button labels never pass through the Markdown parser.
+func (p *Platform) prepareButtonLabels(content string, buttons [][]core.ButtonOption) (string, string, [][]core.ButtonOption) {
 	limit := p.buttonTextLimit
 	if limit == 0 {
 		limit = defaultButtonTextLimit
@@ -45,11 +47,12 @@ func (p *Platform) prepareButtonLabels(content string, buttons [][]core.ButtonOp
 		}
 	}
 	if !numbered {
-		return content, buttons
+		return content, core.MarkdownToSimpleHTML(content), buttons
 	}
 
-	var body strings.Builder
+	var body, htmlBody strings.Builder
 	body.WriteString(content)
+	htmlBody.WriteString(core.MarkdownToSimpleHTML(content))
 	rows := make([][]core.ButtonOption, len(buttons))
 	i18n := p.noticeI18n()
 	number := 0
@@ -60,10 +63,12 @@ func (p *Platform) prepareButtonLabels(content string, buttons [][]core.ButtonOp
 			label := i18n.Tf(core.MsgButtonOption, number)
 			if body.Len() > 0 {
 				body.WriteString("\n\n")
+				htmlBody.WriteString("\n\n")
 			}
 			fmt.Fprintf(&body, "**%s:** %s", label, button.Text)
+			fmt.Fprintf(&htmlBody, "<b>%s:</b> %s", html.EscapeString(label), html.EscapeString(button.Text))
 			rows[i][j] = core.ButtonOption{Text: label, Data: button.Data}
 		}
 	}
-	return body.String(), rows
+	return body.String(), htmlBody.String(), rows
 }

@@ -1334,7 +1334,7 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 		return err
 	}
 
-	content, buttons = p.prepareButtonLabels(content, buttons)
+	content, html, buttons := p.prepareButtonLabels(content, buttons)
 	var rows [][]models.InlineKeyboardButton
 	for _, row := range buttons {
 		var btns []models.InlineKeyboardButton
@@ -1344,7 +1344,6 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 		rows = append(rows, btns)
 	}
 
-	html := core.MarkdownToSimpleHTML(content)
 	params := &tgbot.SendMessageParams{
 		ChatID:          rc.chatID,
 		MessageThreadID: rc.threadID,

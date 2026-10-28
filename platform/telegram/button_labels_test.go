@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"reflect"
 	"strings"
 	"testing"
@@ -244,6 +245,42 @@ func TestSendWithButtons_LongOptionsSurviveMessageSplitting(t *testing.T) {
 			}
 			if keyboards != 1 || strings.Count(content.String(), "x") != 6000 || !strings.Contains(content.String(), "Keep current") {
 				t.Fatalf("lost or duplicated options: keyboards=%d option characters=%d", keyboards, strings.Count(content.String(), "x"))
+			}
+		})
+	}
+}
+
+func TestSendWithButtons_NumberedLabelsPreserveLiteralMarkdown(t *testing.T) {
+	labels := []string{
+		"Rename __init__.py without changing package behavior",
+		"Keep **literal** stars, `backticks`, and ~~tildes~~",
+		"Keep [label](https://example.com) and [[wiki|label]]",
+		"Keep <config> & quoted \"values\" unchanged",
+		"Keep line breaks\n# Heading\n- list\n> quote\n```\n__code__\n```",
+	}
+	for _, rejectHTML := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reject_html=%v", rejectHTML), func(t *testing.T) {
+			bot := &buttonRecordingBot{rejectHTML: rejectHTML}
+			p := &Platform{bot: bot}
+			rows := make([][]core.ButtonOption, len(labels))
+			for i, label := range labels {
+				rows[i] = []core.ButtonOption{{Text: label, Data: fmt.Sprintf("choice:%d", i)}}
+			}
+			if err := p.SendWithButtons(context.Background(), replyContext{chatID: 42}, "Choose **carefully**.", rows); err != nil {
+				t.Fatal(err)
+			}
+			sent := bot.sends[0]
+			if !rejectHTML && !strings.HasPrefix(sent.Text, "Choose <b>carefully</b>.") {
+				t.Fatalf("lost original message formatting: %q", sent.Text)
+			}
+			for i, label := range labels {
+				want := fmt.Sprintf("<b>Option %d:</b> %s", i+1, html.EscapeString(label))
+				if rejectHTML {
+					want = fmt.Sprintf("**Option %d:** %s", i+1, label)
+				}
+				if !strings.Contains(sent.Text, want) {
+					t.Errorf("literal label %d missing: want %q in %q", i+1, want, sent.Text)
+				}
 			}
 		})
 	}
