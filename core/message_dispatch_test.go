@@ -264,3 +264,32 @@ func TestBusyMessageMode_StopDuringStartupClosesLateAgent(t *testing.T) {
 		t.Fatalf("stopped startup sent %d prompts", count)
 	}
 }
+
+func TestBusyMessageMode_StopDuringStartupAllowsImmediateReplacement(t *testing.T) {
+	env := newReceiptAckEnv(t, nil)
+	env.engine.SetBusyMessageMode("steer")
+	replacement := &receiptAgentSession{queuingAgentSession: newQueuingSession("replacement")}
+	starts := 0
+	env.engine.agent = &controllableAgent{startSessionFn: func(ctx context.Context, id string) (AgentSession, error) {
+		starts++
+		if starts == 1 {
+			return env.startup.StartSession(ctx, id)
+		}
+		return replacement, nil
+	}}
+	env.send("first", "first task", 1000)
+	env.awaitStartup()
+	env.send("stop", "/stop", 2000)
+	env.send("replacement", "replacement task", 3000)
+	close(env.startup.release)
+	env.waitFor("replacement reaches the agent", 3*time.Second, func() bool {
+		replacement.sendMu.Lock()
+		defer replacement.sendMu.Unlock()
+		return len(replacement.sendCalls) == 1
+	})
+	if env.startup.session.Alive() {
+		t.Fatal("canceled startup agent was not closed")
+	}
+	replacement.events <- Event{Type: EventResult, Content: "replacement done", Done: true}
+	env.awaitVisible("replacement done")
+}

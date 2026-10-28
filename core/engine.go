@@ -3263,7 +3263,7 @@ func (e *Engine) dispatchUserMessage(p Platform, msg *Message, sessions *Session
 	// Ensure an interactiveState entry exists before taking the session lock.
 	// Without this, concurrent messages can observe the session as busy during
 	// startup but still find no state to queue into.
-	e.ensureInteractiveStateForQueueing(interactiveKey, p, msg.ReplyCtx)
+	e.ensureInteractiveStateForQueueing(interactiveKey, p, msg.ReplyCtx, session)
 	var lockGen uint64
 	if gen, locked := session.TryLock(); locked {
 		lockGen = gen
@@ -3348,7 +3348,7 @@ sessionLocked:
 	// processor so messages arriving during session startup can be queued
 	// instead of dropped (issue #565). This is still needed after idle auto-
 	// reset because cleanupInteractiveState may remove the early placeholder.
-	e.ensureInteractiveStateForQueueing(interactiveKey, p, msg.ReplyCtx)
+	e.ensureInteractiveStateForQueueing(interactiveKey, p, msg.ReplyCtx, session)
 	e.noteUserMessageAccepted(interactiveKey, msg.UserMessageTimeMs)
 	runMessageAccepted(msg)
 	slog.Debug("user message accepted for processing",
@@ -3556,11 +3556,12 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 // is still starting up to be queued instead of dropped (issue #565).
 // The placeholder has agentSession==nil; getOrCreateInteractiveStateWith will
 // replace it with a fully initialized state once the agent process is spawned.
-func (e *Engine) ensureInteractiveStateForQueueing(key string, p Platform, replyCtx any) {
+func (e *Engine) ensureInteractiveStateForQueueing(key string, p Platform, replyCtx any, session *Session) {
 	e.interactiveMu.Lock()
 	defer e.interactiveMu.Unlock()
 	if _, ok := e.interactiveStates[key]; !ok {
 		e.interactiveStates[key] = &interactiveState{
+			busySession:      session,
 			platform:         p,
 			replyCtx:         replyCtx,
 			eventsNeedResync: true,
@@ -4576,6 +4577,13 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	// agent. The startup mutex protects per-session env/provider setup; the
 	// global map lock must remain available for queueing and cancellation.
 	placeholder := e.interactiveStates[sessionKey]
+	if placeholder == nil {
+		placeholder = &interactiveState{platform: p, replyCtx: replyCtx, agent: agent, eventsNeedResync: true}
+		e.interactiveStates[sessionKey] = placeholder
+	}
+	placeholder.mu.Lock()
+	placeholder.busySession = session
+	placeholder.mu.Unlock()
 	start := func(id string) (AgentSession, error, bool) {
 		e.interactiveMu.Unlock()
 		as, err := agent.StartSession(e.ctx, id)
