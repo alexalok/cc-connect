@@ -30,6 +30,7 @@ type Session struct {
 	AgentSessionID      string   `json:"agent_session_id"`
 	AgentType           string   `json:"agent_type,omitempty"`
 	PastAgentSessionIDs []string `json:"past_agent_session_ids,omitempty"`
+	Archived            bool     `json:"archived,omitempty"`
 	// ActiveProvider is the agent provider name that was active when this
 	// session last took a turn. It is restored before --resume so that a
 	// cc-connect process restart does not silently drop a user's
@@ -58,6 +59,7 @@ type Session struct {
 
 	mu        sync.Mutex `json:"-"`
 	busy      bool       `json:"-"`
+	archiving bool       `json:"-"`
 	busySince time.Time  `json:"-"` // custom 2026-09-12: when the busy lock was acquired (stale-lock self-heal)
 	lockGen   uint64     `json:"-"` // custom 2026-09-12: lock generation, invalidates late unlocks after BreakStaleLock
 }
@@ -71,7 +73,7 @@ type Session struct {
 func (s *Session) TryLock() (uint64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.busy {
+	if s.busy || s.archiving {
 		return 0, false
 	}
 	s.busy = true
@@ -86,14 +88,6 @@ func (s *Session) Busy() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.busy
-}
-
-// canStartTurn rejects workers whose busy-lock generation was canceled while
-// waiting for agent startup. Generation zero is used by direct session tests.
-func (s *Session) canStartTurn(gen uint64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return gen == 0 || (s.busy && s.lockGen == gen)
 }
 
 func (s *Session) Unlock(gen uint64) {
@@ -214,6 +208,48 @@ func (s *Session) GetAgentSessionID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.AgentSessionID
+}
+
+func (s *Session) IsArchived() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Archived
+}
+
+func (s *Session) SetArchived(archived bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Archived = archived
+}
+
+func (s *Session) beginArchive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.archiving {
+		return false
+	}
+	s.archiving = true
+	return true
+}
+
+func (s *Session) endArchive() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.archiving = false
+}
+
+func (s *Session) isArchiving() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.archiving
+}
+
+// canStartTurn rejects workers accepted before archive cleanup invalidated
+// their busy-lock generation, even if the archive failed or was later restored.
+func (s *Session) canStartTurn(gen uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.archiving && !s.Archived && (gen == 0 || (s.busy && gen == s.lockGen))
 }
 
 // SetName atomically updates the session's display name. The management
@@ -438,12 +474,28 @@ func (sm *SessionManager) nextID() string {
 }
 
 func (sm *SessionManager) GetOrCreateActive(userKey string) *Session {
+	return sm.getOrCreateActive(userKey, false)
+}
+
+// GetOrCreateActiveForRead keeps an archived current session available for
+// inspection and topic-deletion retries. Turn processing must use
+// GetOrCreateActive, which advances to a fresh session after archival.
+func (sm *SessionManager) GetOrCreateActiveForRead(userKey string) *Session {
+	return sm.getOrCreateActive(userKey, true)
+}
+
+func (sm *SessionManager) getOrCreateActive(userKey string, keepArchived bool) *Session {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	if sid, ok := sm.activeSession[userKey]; ok {
 		if s, ok := sm.sessions[sid]; ok {
-			return s
+			s.mu.Lock()
+			archived := s.Archived && !s.archiving
+			s.mu.Unlock()
+			if keepArchived || !archived {
+				return s
+			}
 		}
 	}
 	s := sm.createLocked(userKey, "default")
@@ -502,6 +554,7 @@ func (sm *SessionManager) SwitchSession(userKey, target string) (*Session, error
 		s := sm.sessions[sid]
 		if s != nil && (s.ID == target || s.Name == target) {
 			sm.activeSession[userKey] = s.ID
+			s.SetArchived(false)
 			s.MarkExplicitlyActivated()
 			sm.saveLocked()
 			return s, nil
@@ -528,6 +581,7 @@ func (sm *SessionManager) SwitchToAgentSession(userKey, agentSID, agentName, sum
 		s.mu.Unlock()
 		if aid == agentSID {
 			sm.activeSession[userKey] = s.ID
+			s.SetArchived(false)
 			s.MarkExplicitlyActivated()
 			sm.saveLocked()
 			return s
@@ -813,6 +867,7 @@ func (sm *SessionManager) saveLocked() {
 			AgentType:           s.AgentType,
 			ActiveProvider:      s.ActiveProvider,
 			PastAgentSessionIDs: append([]string(nil), s.PastAgentSessionIDs...),
+			Archived:            s.Archived,
 			History:             append([]HistoryEntry(nil), s.History...),
 			CreatedAt:           s.CreatedAt,
 			UpdatedAt:           s.UpdatedAt,

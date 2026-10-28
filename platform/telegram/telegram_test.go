@@ -94,6 +94,10 @@ func newStubTelegramBot() *stubTelegramBot {
 	}
 }
 
+func (b *stubTelegramBot) DeleteForumTopic(_ context.Context, _ *tgbot.DeleteForumTopicParams) (bool, error) {
+	return true, nil
+}
+
 func (b *stubTelegramBot) SendMessage(_ context.Context, _ *tgbot.SendMessageParams) (*models.Message, error) {
 	b.mu.Lock()
 	b.sendMessageCalls++
@@ -1035,4 +1039,3 @@ func TestProgressStyleProviderInterface(t *testing.T) {
 		t.Fatalf("ProgressStyle() = %q, want compact", got)
 	}
 }
-
