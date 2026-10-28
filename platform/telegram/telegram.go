@@ -111,6 +111,7 @@ type Platform struct {
 	shareSessionInChannel bool
 	enableReactions       bool
 	readReceipts          bool
+	buttonTextLimit       int
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
 	topicRouting          privateTopicRouting
@@ -185,6 +186,11 @@ func New(opts map[string]any) (core.Platform, error) {
 		readReceipts = v
 	}
 
+	buttonTextLimit, err := parseButtonTextLimit(opts)
+	if err != nil {
+		return nil, err
+	}
+
 	// Default to "compact" so streaming edits work out of the box. Telegram has
 	// no rich card UI, so "card" is normalized to "compact". Users can opt out
 	// via progress_style = "legacy" to restore the old "send full text once"
@@ -212,6 +218,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		shareSessionInChannel: shareSessionInChannel,
 		enableReactions:       enableReactions,
 		readReceipts:          readReceipts,
+		buttonTextLimit:       buttonTextLimit,
 		progressStyle:         progressStyle,
 		httpClient:            httpClient,
 		topicStatus:           status,
@@ -1327,6 +1334,7 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 		return err
 	}
 
+	content, buttons = p.prepareButtonLabels(content, buttons)
 	var rows [][]models.InlineKeyboardButton
 	for _, row := range buttons {
 		var btns []models.InlineKeyboardButton

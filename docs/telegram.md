@@ -145,6 +145,17 @@ Notes:
 - Leave `proxy_username` and `proxy_password` empty when the proxy does not require authentication.
 - The proxy only affects Telegram Bot API requests for this Telegram platform instance.
 
+### Button text limits
+
+Button labels are limited to 32 Unicode characters by default. If any label
+exceeds the limit or contains a line break, the message shows all full choices
+as **Option 1**, **Option 2**, and so on. The buttons use the same short labels;
+selecting one still sends the original choice. Short labels stay unchanged.
+
+Set `button_text_limit = 32` in the existing `[projects.platforms.options]`
+section to adjust the limit (minimum 16). Full choices remain available even
+when their text spans several messages.
+
 ---
 
 ## Step 3: Get Chat ID (Optional)

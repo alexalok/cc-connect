@@ -460,6 +460,7 @@ const (
 	MsgPermCardBody    MsgKey = "perm_card_body"
 	MsgPermCardNote    MsgKey = "perm_card_note"
 
+	MsgButtonOption         MsgKey = "button_option"
 	MsgAskQuestionTitle     MsgKey = "ask_question_title"
 	MsgAskQuestionNote      MsgKey = "ask_question_note"
 	MsgAskQuestionNoteMulti MsgKey = "ask_question_note_multi"
@@ -2864,6 +2865,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "若按鈕無回應，請直接回覆：允許 / 拒絕 / 允許所有",
 		LangJapanese:           "ボタンが反応しない場合は直接返信: allow / deny / allow all",
 		LangSpanish:            "Si los botones no responden, responda: allow / deny / allow all",
+	},
+	MsgButtonOption: {
+		LangEnglish:            "Option %d",
+		LangChinese:            "选项 %d",
+		LangTraditionalChinese: "選項 %d",
+		LangJapanese:           "選択肢 %d",
+		LangSpanish:            "Opción %d",
 	},
 	MsgAskQuestionTitle: {
 		LangEnglish:            "Agent Question",
