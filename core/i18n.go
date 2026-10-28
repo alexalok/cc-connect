@@ -211,6 +211,9 @@ const (
 	MsgPreviousProcessing        MsgKey = "previous_processing"
 	MsgQueueFull                 MsgKey = "queue_full"
 	MsgMessageQueued             MsgKey = "message_queued"
+	MsgMessageSteered            MsgKey = "message_steered"
+	MsgMessageSteerFailed        MsgKey = "message_steer_failed"
+	MsgQueueEmpty                MsgKey = "queue_empty"
 	MsgNoToolsAllowed            MsgKey = "no_tools_allowed"
 	MsgCurrentTools              MsgKey = "current_tools"
 	MsgCurrentSession            MsgKey = "current_session"
@@ -640,6 +643,7 @@ const (
 	MsgBuiltinCmdDir       MsgKey = "dir"
 	MsgBuiltinCmdDiff      MsgKey = "diff"
 	MsgBuiltinCmdPs        MsgKey = "ps"
+	MsgBuiltinCmdQueue     MsgKey = "queue"
 
 	MsgDiffEmpty       MsgKey = "diff_empty"
 	MsgDiffNoDiff2HTML MsgKey = "diff_no_diff2html"
@@ -3608,6 +3612,27 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "✅ P.S. を送信しました。",
 		LangSpanish:            "✅ P.S. entregado.",
 	},
+	MsgQueueEmpty: {
+		LangEnglish:            "Usage: `/queue <message>` (attachments are supported)",
+		LangChinese:            "用法：`/queue <消息>`（支持附件）",
+		LangTraditionalChinese: "用法：`/queue <訊息>`（支援附件）",
+		LangJapanese:           "使い方：`/queue <メッセージ>`（添付ファイルも使用可能）",
+		LangSpanish:            "Uso: `/queue <mensaje>` (se admiten archivos adjuntos)",
+	},
+	MsgMessageSteered: {
+		LangEnglish:            "✅ Message delivered to the running task.",
+		LangChinese:            "✅ 消息已送达正在执行的任务。",
+		LangTraditionalChinese: "✅ 訊息已送達正在執行的任務。",
+		LangJapanese:           "✅ 実行中のタスクにメッセージを送信しました。",
+		LangSpanish:            "✅ Mensaje entregado a la tarea en curso.",
+	},
+	MsgMessageSteerFailed: {
+		LangEnglish:            "❌ Could not confirm delivery to the running task. Check its response before retrying or using `/queue <message>`.",
+		LangChinese:            "❌ 无法确认消息是否送达正在执行的任务。请检查任务回复后再重试或使用 `/queue <消息>`。",
+		LangTraditionalChinese: "❌ 無法確認訊息是否送達正在執行的任務。請檢查任務回覆後再重試或使用 `/queue <訊息>`。",
+		LangJapanese:           "❌ 実行中のタスクへの送信を確認できませんでした。応答を確認してから再試行するか、`/queue <メッセージ>` を使用してください。",
+		LangSpanish:            "❌ No se pudo confirmar la entrega a la tarea en curso. Revisa su respuesta antes de reintentar o usar `/queue <mensaje>`.",
+	},
 	MsgPsSendFailed: {
 		LangEnglish:            "❌ Failed to deliver P.S.",
 		LangChinese:            "❌ P.S. 发送失败。",
@@ -4046,6 +4071,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "向正在執行的任務追加補充資訊",
 		LangJapanese:           "実行中のタスクに補足情報を送信",
 		LangSpanish:            "Enviar un P.S. a la tarea en curso",
+	},
+	MsgBuiltinCmdQueue: {
+		LangEnglish:            "Queue a message after the current task, arg: <message>",
+		LangChinese:            "将消息排在当前任务之后，参数：<消息>",
+		LangTraditionalChinese: "將訊息排在目前任務之後，參數：<訊息>",
+		LangJapanese:           "現在のタスクの後にメッセージを処理、引数: <メッセージ>",
+		LangSpanish:            "Encolar un mensaje después de la tarea actual, arg: <mensaje>",
 	},
 	MsgDiffEmpty: {
 		LangEnglish:            "No diff — clean working tree (or no changes vs `%s`).",

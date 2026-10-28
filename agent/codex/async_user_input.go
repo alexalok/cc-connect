@@ -2,7 +2,6 @@ package codex
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/chenhg5/cc-connect/core"
@@ -43,29 +42,7 @@ func (s *appServerSession) handleAsyncUserInput(item map[string]any) bool {
 }
 
 func (s *appServerSession) SteerUserInput(prompt string) (bool, error) {
-	s.stateMu.Lock()
-	turnID := s.currentTurn
-	s.stateMu.Unlock()
-	if turnID == "" {
-		return false, nil
-	}
-	params := map[string]any{
-		"threadId":       s.CurrentSessionID(),
-		"expectedTurnId": turnID,
-		"input": []map[string]any{{
-			"type": "text", "text": prompt, "text_elements": []any{},
-		}},
-	}
-	var response struct {
-		TurnID string `json:"turnId"`
-	}
-	if err := s.request("turn/steer", params, &response); err != nil {
-		return false, fmt.Errorf("codex app-server answer async question: %w", err)
-	}
-	if response.TurnID != turnID {
-		return false, fmt.Errorf("codex app-server answer returned turn %q, want %q", response.TurnID, turnID)
-	}
-	return true, nil
+	return s.SteerMessage(prompt, "", nil, nil)
 }
 
 var _ core.UserInputSteerer = (*appServerSession)(nil)

@@ -146,7 +146,7 @@ func TestCmdArchive_AcceptedWorkerCannotStartAfterCleanup(t *testing.T) {
 			// Model a message accepted by handleMessage whose worker has not
 			// been scheduled yet: its lock and queue placeholder already exist.
 			gen, _ := s.TryLock()
-			e.ensureInteractiveStateForQueueing(key, p, nil)
+			e.ensureInteractiveStateForQueueing(key, p, nil, s)
 			e.ReceiveMessage(p, &Message{SessionKey: key, Content: "/archive"})
 			p.clearSent()
 			e.processInteractiveMessageWith(p, &Message{SessionKey: key, Content: "late worker"}, s, a, e.sessions, key, "", key, gen)

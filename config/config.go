@@ -489,10 +489,12 @@ type ReferenceConfig struct {
 
 // ProjectConfig binds one agent (with a specific work_dir) to one or more platforms.
 type ProjectConfig struct {
-	Name    string `toml:"name"`
-	Mode    string `toml:"mode,omitempty"`     // "" or "multi-workspace"
-	BaseDir string `toml:"base_dir,omitempty"` // parent dir for workspaces
-	SkipGit *bool  `toml:"skip_git,omitempty"`
+	Name string `toml:"name"`
+	// BusyMessageMode controls normal messages during a running turn: queue (default) or steer.
+	BusyMessageMode string `toml:"busy_message_mode,omitempty"`
+	Mode            string `toml:"mode,omitempty"`     // "" or "multi-workspace"
+	BaseDir         string `toml:"base_dir,omitempty"` // parent dir for workspaces
+	SkipGit         *bool  `toml:"skip_git,omitempty"`
 	// WorkspaceInitAllowLocalPaths allows /workspace init and the conversational
 	// init flow to bind existing local directories. Default false keeps init
 	// limited to git URLs; use /workspace bind or /workspace route for explicit
@@ -1096,6 +1098,11 @@ func (c *Config) validateInternal(permissive bool) error {
 	}
 	for i, proj := range c.Projects {
 		prefix := fmt.Sprintf("projects[%d]", i)
+		switch strings.ToLower(strings.TrimSpace(proj.BusyMessageMode)) {
+		case "", "queue", "steer":
+		default:
+			return fmt.Errorf("config: %s.busy_message_mode must be \"queue\" or \"steer\"", prefix)
+		}
 		if proj.Name == "" {
 			return fmt.Errorf("config: %s.name is required", prefix)
 		}

@@ -422,6 +422,7 @@ type Engine struct {
 	agentSessionIdleTimeoutNanos atomic.Int64
 	agentSessionIdleSeq          atomic.Uint64
 	maxQueuedMessages            int
+	busyMessageMode              string
 	dirHistory                   *DirHistory
 	baseWorkDir                  string
 	projectState                 *ProjectStateStore
@@ -488,6 +489,7 @@ type Engine struct {
 
 	// Interactive agent session management
 	interactiveMu     sync.Mutex
+	agentStartMu      sync.Mutex                   // serialize session-specific agent setup without blocking incoming messages
 	interactiveStates map[string]*interactiveState // key = sessionKey
 
 	// Teardown tracking. A session's state is removed from interactiveStates
@@ -619,16 +621,24 @@ type interactiveState struct {
 	// currentTurnUserMessageTimeMs is the UserMessageTimeMs for the in-flight
 	// foreground turn (including a queued turn after EventResult).
 	currentTurnUserMessageTimeMs int64
+	// Steering advances inbound deduplication, but must not expire older /queue messages.
+	lastSteeredUserMessageTimeMs int64
+	steeringTail                 <-chan struct{} // serializes native steering without blocking platform input
+	pendingSteering              int
+	deferredMessages             map[*Message]bool // true when recalled before dispatch; protected by mu
 }
 
 // latestUserMessageWatermarkLocked returns the highest UserMessageTimeMs among
-// completed turns, the in-flight turn, and queued messages for this session.
+// completed turns, the in-flight turn, supplements, and queued messages for this session.
 // state.mu must be held by the caller.
 func latestUserMessageWatermarkLocked(state *interactiveState) int64 {
 	if state == nil {
 		return 0
 	}
 	wm := state.lastCompletedUserMessageTimeMs
+	if state.lastSteeredUserMessageTimeMs > wm {
+		wm = state.lastSteeredUserMessageTimeMs
+	}
 	if state.currentTurnUserMessageTimeMs > wm {
 		wm = state.currentTurnUserMessageTimeMs
 	}
@@ -645,6 +655,7 @@ type userMessageWatermarkSnapshot struct {
 	completedMs int64
 	inFlightMs  int64
 	queuedMaxMs int64
+	steeredMs   int64
 }
 
 // userMessageWatermarkSnapshotLocked captures the per-source watermark values.
@@ -656,6 +667,7 @@ func userMessageWatermarkSnapshotLocked(state *interactiveState) userMessageWate
 	snap := userMessageWatermarkSnapshot{
 		completedMs: state.lastCompletedUserMessageTimeMs,
 		inFlightMs:  state.currentTurnUserMessageTimeMs,
+		steeredMs:   state.lastSteeredUserMessageTimeMs,
 	}
 	for _, q := range state.pendingMessages {
 		if q.userMessageTimeMs > snap.queuedMaxMs {
@@ -672,6 +684,9 @@ func (s userMessageWatermarkSnapshot) acceptReason() string {
 		return "none"
 	}
 	// Prefer the most specific active state when multiple sources tie.
+	if s.steeredMs == s.maxMs && s.steeredMs > 0 {
+		return "steered"
+	}
 	if s.inFlightMs == s.maxMs && s.inFlightMs > 0 {
 		return "processing"
 	}
@@ -2663,12 +2678,14 @@ func (e *Engine) removeQueuedMessageByID(messageID string) (string, bool) {
 		}
 		state.mu.Lock()
 		pending := state.pendingMessages
-		if len(pending) == 0 {
-			state.mu.Unlock()
-			continue
-		}
 		filtered := pending[:0]
 		removed := false
+		for msg := range state.deferredMessages {
+			if msg.MessageID == messageID {
+				state.deferredMessages[msg] = true
+				removed = true
+			}
+		}
 		for _, queued := range pending {
 			if queued.messageID == messageID {
 				removed = true
@@ -3176,11 +3193,15 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgArchiveInProgress))
 		return
 	}
-	if len(msg.Images) == 0 && strings.HasPrefix(content, "/") {
+	if (len(msg.Images) == 0 || isQueueCommand(content)) && strings.HasPrefix(content, "/") {
 		if e.handleCommand(p, msg, content) {
 			return
 		}
 		// Unrecognized slash command — fall through to agent as normal message
+	}
+	if msg.forceQueue {
+		e.dispatchUserMessage(p, msg, sessions, agent, interactiveKey, resolvedWorkspace)
+		return
 	}
 
 	// Permission responses bypass the session lock.
@@ -3234,6 +3255,17 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		return
 	}
 
+	e.dispatchUserMessage(p, msg, sessions, agent, interactiveKey, resolvedWorkspace)
+}
+
+func (e *Engine) dispatchUserMessage(p Platform, msg *Message, sessions *SessionManager, agent Agent, interactiveKey, resolvedWorkspace string) {
+	if e.busyMessageMode == "steer" && e.deferBusyMessage(p, msg, sessions, agent, interactiveKey, resolvedWorkspace) {
+		return
+	}
+	e.dispatchUserMessageNow(p, msg, sessions, agent, interactiveKey, resolvedWorkspace, false)
+}
+
+func (e *Engine) dispatchUserMessageNow(p Platform, msg *Message, sessions *SessionManager, agent Agent, interactiveKey, resolvedWorkspace string, allowSteering bool) {
 	if e.discardStaleUserMessageIfNeeded(interactiveKey, msg) {
 		return
 	}
@@ -3243,7 +3275,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	// Ensure an interactiveState entry exists before taking the session lock.
 	// Without this, concurrent messages can observe the session as busy during
 	// startup but still find no state to queue into.
-	e.ensureInteractiveStateForQueueing(interactiveKey, p, msg.ReplyCtx)
+	e.ensureInteractiveStateForQueueing(interactiveKey, p, msg.ReplyCtx, session)
 	var lockGen uint64
 	if gen, locked := session.TryLock(); locked {
 		lockGen = gen
@@ -3294,6 +3326,9 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			}
 		}
 		// ── end self-heal; queueing path below is unchanged ────────────────
+		if allowSteering && !msg.forceQueue && e.steerBusyMessage(p, msg, session, sessions, interactiveKey) {
+			return
+		}
 		// Session is busy — try to queue the message for the running turn
 		// so the agent processes it immediately after the current turn ends.
 		if e.queueMessageForBusySession(p, msg, interactiveKey) {
@@ -3325,7 +3360,11 @@ sessionLocked:
 	// processor so messages arriving during session startup can be queued
 	// instead of dropped (issue #565). This is still needed after idle auto-
 	// reset because cleanupInteractiveState may remove the early placeholder.
-	e.ensureInteractiveStateForQueueing(interactiveKey, p, msg.ReplyCtx)
+	e.ensureInteractiveStateForQueueing(interactiveKey, p, msg.ReplyCtx, session)
+	if !e.claimUserTurn(interactiveKey, msg) {
+		session.Unlock(lockGen)
+		return
+	}
 	e.noteUserMessageAccepted(interactiveKey, msg.UserMessageTimeMs)
 	runMessageAccepted(msg)
 	slog.Debug("user message accepted for processing",
@@ -3454,6 +3493,13 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 	e.interactiveMu.Unlock()
 	defer state.mu.Unlock()
 
+	// Transfer recall ownership from the dispatcher to pendingMessages while
+	// holding the same mutex used by recall, so no instruction falls in a gap.
+	if state.deferredMessages[msg] {
+		return true
+	}
+	delete(state.deferredMessages, msg)
+
 	if state.startFailureMsg == MsgSessionResumePreserved || state.startFailureMsg == MsgSessionResumeBlocked {
 		// A failed strict resume is no longer starting up: do not accept
 		// messages into a queue with no agent to drain it.
@@ -3533,11 +3579,12 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 // is still starting up to be queued instead of dropped (issue #565).
 // The placeholder has agentSession==nil; getOrCreateInteractiveStateWith will
 // replace it with a fully initialized state once the agent process is spawned.
-func (e *Engine) ensureInteractiveStateForQueueing(key string, p Platform, replyCtx any) {
+func (e *Engine) ensureInteractiveStateForQueueing(key string, p Platform, replyCtx any, session *Session) {
 	e.interactiveMu.Lock()
 	defer e.interactiveMu.Unlock()
 	if _, ok := e.interactiveStates[key]; !ok {
 		e.interactiveStates[key] = &interactiveState{
+			busySession:      session,
 			platform:         p,
 			replyCtx:         replyCtx,
 			eventsNeedResync: true,
@@ -3580,6 +3627,7 @@ func (e *Engine) drainOrphanedQueue(session *Session, sessions *SessionManager, 
 	state.mu.Unlock()
 	if alive {
 		e.startUnsolicitedReader(state, session, sessions, interactiveKey, workspaceDir)
+		e.scheduleAgentSessionIdleClose(interactiveKey, state)
 	}
 }
 
@@ -4372,14 +4420,15 @@ func (e *Engine) workspaceContext(workspace, sessionKey string) (Agent, *Session
 }
 
 // getOrCreateInteractiveStateWith accepts an optional agent override for multi-workspace mode.
-// adoptPendingFromPlaceholder copies pendingMessages from an existing placeholder
-// state to newState so queued messages are not lost when the map entry is replaced.
+// adoptPendingFromPlaceholder preserves the initiating message's recall ownership
+// and pendingMessages when a started agent replaces its placeholder.
 // Must be called under interactiveMu.
 func adoptPendingFromPlaceholder(existing, newState *interactiveState) {
 	if existing == nil || existing == newState {
 		return
 	}
 	existing.mu.Lock()
+	newState.currentMessageID = existing.currentMessageID
 	if len(existing.pendingMessages) > 0 {
 		newState.pendingMessages = existing.pendingMessages
 		existing.pendingMessages = nil
@@ -4396,9 +4445,10 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	// while the first one is still alive and writing to the same transcript.
 	closeSettled := e.awaitSessionClose(sessionKey)
 
+	e.agentStartMu.Lock()
+	defer e.agentStartMu.Unlock()
 	e.interactiveMu.Lock()
 	defer e.interactiveMu.Unlock()
-
 	// Cleanup takes the same mutex, so either it closes the agent started
 	// below or this check prevents startup after archive teardown has begun.
 	if !session.canStartTurn(lockGen) {
@@ -4552,8 +4602,43 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	}
 
 	isResume := startSessionID != ""
+	// Keep the placeholder visible to incoming messages while starting the
+	// agent. The startup mutex protects per-session env/provider setup; the
+	// global map lock must remain available for queueing and cancellation.
+	placeholder := e.interactiveStates[sessionKey]
+	if placeholder == nil {
+		placeholder = &interactiveState{platform: p, replyCtx: replyCtx, agent: agent, eventsNeedResync: true}
+		e.interactiveStates[sessionKey] = placeholder
+	}
+	placeholder.mu.Lock()
+	placeholder.busySession = session
+	placeholder.mu.Unlock()
+	start := func(id string) (AgentSession, error, bool) {
+		// Cancellation can detach the placeholder before StartSession returns.
+		// Keep teardown waiters (including /archive) blocked until any late
+		// process has either been adopted or closed with unsafe-resume guards.
+		finishStart := e.beginSessionClose(sessionKey)
+		defer finishStart()
+		e.interactiveMu.Unlock()
+		as, err := agent.StartSession(e.ctx, id)
+		e.interactiveMu.Lock()
+		if e.ctx.Err() != nil || !session.canStartTurn(lockGen) || e.interactiveStates[sessionKey] != placeholder {
+			if as != nil {
+				e.interactiveMu.Unlock()
+				// Keep the startup mutex held until teardown has recorded any
+				// unsafe-resume guard, before a replacement worker can start.
+				e.closeAgentSessionWithTimeout(sessionKey, as, p, replyCtx, agent)
+				e.interactiveMu.Lock()
+			}
+			return nil, nil, false
+		}
+		return as, err, true
+	}
 	startAt := time.Now()
-	agentSession, err := agent.StartSession(e.ctx, startSessionID)
+	agentSession, err, current := start(startSessionID)
+	if !current {
+		return nil
+	}
 	startElapsed := time.Since(startAt)
 	if err != nil {
 		// If resume/continue failed, try a fresh session as fallback.
@@ -4566,7 +4651,10 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 			session.SetAgentSessionID("", agent.Name())
 			sessions.Save()
 			startAt = time.Now()
-			agentSession, err = agent.StartSession(e.ctx, "")
+			agentSession, err, current = start("")
+			if !current {
+				return nil
+			}
 			startElapsed = time.Since(startAt)
 			if err == nil {
 				slog.Info("fresh session started after resume failure",
@@ -4651,9 +4739,9 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 // a stale goroutine (still running after /new created a fresh Session object and
 // a new turn started on it) from accidentally destroying the replacement state.
 //
-// IMPORTANT: The state is deleted from the map AFTER the agent session is closed
-// to avoid race conditions where concurrent requests see an empty map while the
-// agent session is still being shut down (which can take up to 130s for Stop hooks).
+// A live agent stays in the map until close completes. A startup placeholder
+// is detached immediately and its lock generation retired; the startup worker
+// closes any late agent instead of adopting it.
 func (e *Engine) cleanupInteractiveState(sessionKey string, expected ...*interactiveState) {
 	e.interactiveMu.Lock()
 	state, ok := e.interactiveStates[sessionKey]
@@ -4668,9 +4756,23 @@ func (e *Engine) cleanupInteractiveState(sessionKey string, expected ...*interac
 	var closePlatform Platform
 	var closeReplyCtx any
 	var closeOwner Agent
+	var finishClose func()
 	if ok && state != nil {
 		state.mu.Lock()
 		agentSession = state.agentSession
+		if agentSession != nil {
+			// Register before releasing the map lock, so overlapping cleanup
+			// cannot expose an untracked teardown to a replacement worker.
+			finishClose = e.beginSessionClose(sessionKey)
+		} else {
+			// Settings commands may reset startup while notifications below
+			// are still being sent. Retire the worker before releasing the map
+			// lock so its late return cannot adopt this placeholder again.
+			if state.busySession != nil {
+				state.busySession.ForceUnlock()
+			}
+			delete(e.interactiveStates, sessionKey)
+		}
 		state.agentSession = nil
 		closePlatform = state.platform
 		closeReplyCtx = state.replyCtx
@@ -4682,6 +4784,9 @@ func (e *Engine) cleanupInteractiveState(sessionKey string, expected ...*interac
 		state.mu.Unlock()
 	}
 	e.interactiveMu.Unlock()
+	if finishClose != nil {
+		defer finishClose()
+	}
 
 	// Notify senders of any queued messages that will never be processed.
 	if ok && state != nil {
@@ -4708,14 +4813,14 @@ func (e *Engine) cleanupInteractiveState(sessionKey string, expected ...*interac
 	// an empty map and reports "No execution in progress" while
 	// the agent session Close() is still blocking (up to 130s).
 	if agentSession != nil {
-		e.closeAgentSessionWithTimeout(sessionKey, agentSession, closePlatform, closeReplyCtx, closeOwner)
+		e.closeAgentSession(sessionKey, agentSession, closePlatform, closeReplyCtx, closeOwner)
 	}
 
 	// Now delete the state from the map after the session is closed.
 	e.interactiveMu.Lock()
 	// Re-check that the state hasn't been replaced during the close
 	currentState, currentOk := e.interactiveStates[sessionKey]
-	if currentOk && len(expected) > 0 && expected[0] != nil && currentState != expected[0] {
+	if !currentOk || currentState != state {
 		// Another turn has replaced the state during our close — don't delete it.
 		e.interactiveMu.Unlock()
 		return
@@ -4757,6 +4862,7 @@ func (e *Engine) scheduleAgentSessionIdleClose(sessionKey string, state *interac
 		state.eventsNeedResync ||
 		state.pending != nil ||
 		state.pendingUserInput != nil ||
+		state.pendingSteering > 0 ||
 		len(state.pendingMessages) > 0 {
 		state.mu.Unlock()
 		cancel()
@@ -4791,11 +4897,13 @@ func (e *Engine) cleanupInteractiveStateForIdleToken(sessionKey string, expected
 	state.mu.Lock()
 	if state.agentSessionIdleToken != token ||
 		state.agentSession == nil ||
+		(state.busySession != nil && state.busySession.Busy()) ||
 		!state.agentSession.Alive() ||
 		state.stopped ||
 		state.eventsNeedResync ||
 		state.pending != nil ||
 		state.pendingUserInput != nil ||
+		state.pendingSteering > 0 ||
 		len(state.pendingMessages) > 0 {
 		state.mu.Unlock()
 		e.interactiveMu.Unlock()
@@ -7192,6 +7300,7 @@ var builtinCommands = []struct {
 	{[]string{"web"}, "web"},
 	{[]string{"diff"}, "diff"},
 	{[]string{"ps", "btw"}, "ps"},
+	{[]string{"queue"}, "queue"},
 }
 
 func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
@@ -7311,6 +7420,10 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 	parts := splitCommandArgs(raw)
 	cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
 	args := parts[1:]
+	if isQueueCommand(raw) {
+		cmd = "queue"
+		args = nil // /queue keeps its raw payload, including newlines and quotes.
+	}
 
 	cmdID := matchPrefix(cmd, builtinCommands)
 
@@ -7443,6 +7556,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdWeb(p, msg, args)
 	case "ps":
 		e.cmdPs(p, msg, args)
+	case "queue":
+		return e.prepareQueuedMessage(p, msg, raw)
 	default:
 		if custom, ok := e.commands.Resolve(cmd); ok {
 			if disabledCmds[strings.ToLower(custom.Name)] {
@@ -10258,6 +10373,7 @@ func helpCardGroups() []helpCardGroup {
 				{command: "/compress", action: "cmd:/compress"},
 				{command: "/stop", action: "act:/stop"},
 				{command: "/ps", action: "cmd:/ps"},
+				{command: "/queue", action: "cmd:/queue"},
 			},
 		},
 		{

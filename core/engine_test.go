@@ -14894,7 +14894,7 @@ func TestEventsNeedResync_DefaultTrue(t *testing.T) {
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	defer e.Stop()
 
-	e.ensureInteractiveStateForQueueing("key1", p, "ctx")
+	e.ensureInteractiveStateForQueueing("key1", p, "ctx", nil)
 
 	e.interactiveMu.Lock()
 	state := e.interactiveStates["key1"]

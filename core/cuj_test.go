@@ -74,6 +74,35 @@ func TestCUJ_A8_ImmediateReceiptsDuringStartupAndQueue(t *testing.T) {
 	env.assertReceipts("first", "second")
 }
 
+func TestCUJ_A10_SteerDefaultWithExplicitQueue(t *testing.T) {
+	env := newDispatchEnv(t, "steer")
+	// Start work, queue two follow-ups, then steer the active task. The newer
+	// steering message must not make either older queued follow-up stale.
+	env.send("first", "first task", 1000)
+	env.awaitSends(1)
+	env.send("queued1", "/queue first follow-up", 2000)
+	env.send("queued2", "/queue second follow-up", 3000)
+	env.awaitVisible(env.engine.i18n.T(MsgMessageQueued))
+	env.send("steer", "adjust the current task", 4000)
+	env.awaitVisible(env.engine.i18n.T(MsgMessageSteered))
+	env.assertCalls(1, 1)
+	env.assertReceipts("first", "queued1", "queued2", "steer")
+	env.finish("first answer including adjustment")
+	env.awaitSends(2)
+	env.finish("first follow-up answer")
+	env.awaitSends(3)
+	env.finish("second follow-up answer")
+	env.waitFor("idle", 3*time.Second, func() bool { return !env.engine.sessions.GetOrCreateActive("test:receipt-user").Busy() })
+	env.assertCalls(3, 1)
+	env.session.mu.Lock()
+	sent := append([]string(nil), env.session.sent...)
+	env.session.mu.Unlock()
+	if fmt.Sprint(sent) != "[first task first follow-up second follow-up]" {
+		t.Fatalf("queued turns reordered or dropped: %v", sent)
+	}
+	env.assertReceipts("first", "queued1", "queued2", "steer")
+}
+
 // psSupplementSession echoes the actual supplement while leaving the initial
 // task open. The engine still owns all command routing and turn completion.
 type psSupplementSession struct {
@@ -3401,6 +3430,121 @@ func TestCUJ_I6_TopicStatusQuestionSurvivesCompletion(t *testing.T) {
 	waitConversationStatus(t, p, ConversationWorking)
 	send("/stop")
 	waitConversationStatus(t, p, ConversationStopped)
+}
+
+func TestCUJ_A11_RecallCancelsDeferredInput(t *testing.T) {
+	for _, payload := range []string{"/queue recalled task", "recalled adjustment"} {
+		t.Run(payload, func(t *testing.T) {
+			env, s := newOrderedDispatchEnv(t)
+			env.send("first", "first task", 1000)
+			env.awaitSends(1)
+			env.send("steer", "adjustment", 2000)
+			attempt := awaitSteerAttempt(t, s, "steer")
+			env.send("recalled", payload, 3000)
+			env.send("kept", "/queue kept task", 4000)
+			beforeRecall := len(env.plat.getSent())
+			responsiveDispatch(t, func() {
+				env.engine.ReceiveMessage(env.plat, &Message{Platform: "test", MessageID: "recalled", Recalled: true})
+			})
+			if len(env.plat.getSent()) != beforeRecall {
+				t.Fatal("recall should silently remove the waiting message")
+			}
+			attempt.ack <- true
+			env.awaitVisible("receipt:kept")
+			env.assertReceipts("first", "steer", "kept")
+			env.finish("first done")
+			env.awaitSends(2)
+			env.session.mu.Lock()
+			last := env.session.sent[1]
+			env.session.mu.Unlock()
+			if last != "kept task" {
+				t.Fatalf("recalled input reached the agent: %q", last)
+			}
+			env.assertCalls(2, 1)
+			env.finish("kept done")
+		})
+	}
+}
+
+func TestCUJ_A12_SettingsChangeDuringStartupRunsFollowup(t *testing.T) {
+	for _, setting := range []struct {
+		command string
+		message MsgKey
+		value   string
+	}{
+		{"/model switch new-model", MsgModelChanged, "new-model"},
+		{"/reasoning high", MsgReasoningChanged, "high"},
+	} {
+		t.Run(setting.command, func(t *testing.T) {
+			env := newReceiptAckEnv(t, nil)
+			env.engine.SetBusyMessageMode("steer")
+			replacement := &receiptAgentSession{queuingAgentSession: newQueuingSession("replacement")}
+			starts := 0
+			env.engine.agent = &startupSettingsAgent{controllableAgent: &controllableAgent{startSessionFn: func(ctx context.Context, id string) (AgentSession, error) {
+				starts++
+				if starts == 1 {
+					return env.startup.StartSession(ctx, id)
+				}
+				return replacement, nil
+			}}}
+			env.send("first", "first task", 1000)
+			env.awaitStartup()
+			responsiveDispatch(t, func() { env.send("setting", setting.command, 2000) })
+			env.awaitVisible(env.engine.i18n.Tf(setting.message, setting.value))
+			env.send("replacement", "replacement task", 3000)
+			close(env.startup.release)
+			env.waitFor("follow-up reaches the new agent", 3*time.Second, func() bool {
+				replacement.sendMu.Lock()
+				defer replacement.sendMu.Unlock()
+				return len(replacement.sendCalls) == 1
+			})
+			if env.startup.session.Alive() {
+				t.Fatal("settings change did not close the canceled startup")
+			}
+			replacement.events <- Event{Type: EventResult, Content: "updated agent answered", Done: true}
+			env.awaitVisible("updated agent answered")
+			env.assertReceipts("first", "replacement")
+		})
+	}
+}
+
+func TestCUJ_A13_RecallDuringStartupCancelsFirstMessage(t *testing.T) {
+	env := newReceiptAckEnv(t, nil)
+	env.engine.SetBusyMessageMode("steer")
+	replacement := &receiptAgentSession{queuingAgentSession: newQueuingSession("replacement")}
+	starts := 0
+	env.engine.agent = &controllableAgent{startSessionFn: func(ctx context.Context, id string) (AgentSession, error) {
+		starts++
+		if starts == 1 {
+			return env.startup.StartSession(ctx, id)
+		}
+		return replacement, nil
+	}}
+	env.send("first", "recalled task", 1000)
+	env.awaitStartup()
+	beforeRecall := len(env.plat.getSent())
+	responsiveDispatch(t, func() {
+		env.engine.ReceiveMessage(env.plat, &Message{Platform: "test", MessageID: "first", Recalled: true})
+	})
+	if len(env.plat.getSent()) != beforeRecall {
+		t.Fatal("recall should cancel startup silently")
+	}
+	env.send("replacement", "replacement task", 2000)
+	close(env.startup.release)
+	env.waitFor("replacement reaches agent", 3*time.Second, func() bool {
+		replacement.sendMu.Lock()
+		defer replacement.sendMu.Unlock()
+		return len(replacement.sendCalls) == 1
+	})
+	env.startup.session.sendMu.Lock()
+	sent := len(env.startup.session.sendCalls)
+	env.startup.session.sendMu.Unlock()
+	if sent != 0 || env.startup.session.Alive() {
+		t.Fatal("recalled startup was executed or left alive")
+	}
+	replacement.events <- Event{Type: EventResult, Content: "replacement answered", Done: true}
+	env.awaitVisible("replacement answered")
+	env.assertReceipts("first", "replacement")
 }
 
 // CUJ: typing spans startup and tool work, follows a queued turn, and ends on /stop.
