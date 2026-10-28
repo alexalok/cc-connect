@@ -345,6 +345,7 @@ func (c *turnCard) writePage(ctx context.Context, index int, text string) error 
 	if err != nil {
 		return err
 	}
+	defer c.p.refreshTyping(c.rc)
 	var sent *models.Message
 	if !c.regular && c.p.useRichMessage(text) {
 		method := "sendRichMessage"

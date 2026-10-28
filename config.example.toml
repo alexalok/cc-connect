@@ -1247,6 +1247,9 @@ app_secret = "your-feishu-app-secret"
 # read_receipts = true  # Add 👀 only after the agent confirms receipt (Codex app_server); queued messages stay unmarked
 #                       # 仅在代理确认接收后添加 👀（Codex app_server）；排队时不标记
 # enable_reactions = false  # Legacy ⚡ on arrival, only when read_receipts = false / 旧版收件表情，仅关闭 read_receipts 时生效
+# button_text_limit = 32  # Maximum Unicode characters per button (minimum 16). Longer or multiline labels
+#                         # move all choices into the message as Option 1, Option 2, etc., with matching buttons.
+#                         # 按钮文字超过限制或含换行时，将完整选项移至消息正文，按钮显示对应的选项编号。
 # topic_status_icons = false # Show turn status in topic icons / 用话题图标显示任务状态
 # rich_messages = false  # Send replies and live edits using Telegram Rich Markdown (Bot API 10.1+).
 #                        # Use "auto" for long/structured replies only, or true for all replies.

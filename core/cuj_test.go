@@ -263,6 +263,112 @@ type cujDirectorySession struct {
 func (s *cujDirectorySession) CurrentSessionID() string { return s.id }
 func (s *cujDirectorySession) GetWorkDir() string       { return s.workDir }
 
+type archiveCUJSession struct {
+	*cujAgentSession
+	id string
+}
+
+func (s *archiveCUJSession) CurrentSessionID() string { return s.id }
+
+// CUJ-B13: chat, list, archive, and open another conversation. The platform
+// records topic removal as a visible event, just as the chat disappearing is
+// visible to a user. All actions enter through ReceiveMessage.
+func TestCUJ_B13_ArchiveRemovesTopicAndSessionFromList(t *testing.T) {
+	for _, retryTopicDeletion := range []bool{false, true} {
+		t.Run(fmt.Sprint("retry topic deletion=", retryTopicDeletion), func(t *testing.T) {
+			runArchiveJourney(t, retryTopicDeletion)
+		})
+	}
+}
+
+func runArchiveJourney(t *testing.T, retryTopicDeletion bool) {
+	t.Helper()
+	var mu sync.Mutex
+	var available []AgentSessionInfo
+	next := 0
+	boundary := &controllableAgent{
+		startSessionFn: func(_ context.Context, resumeID string) (AgentSession, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			next++
+			id := fmt.Sprintf("thread-%d", next)
+			s := &archiveCUJSession{cujAgentSession: newCUJAgentSession(), id: id}
+			s.reply = "Fresh conversation " + id
+			if resumeID != "" {
+				s.reply = "Resumed " + resumeID
+			}
+			available = append(available, AgentSessionInfo{ID: id, Summary: "Conversation " + id})
+			return s, nil
+		},
+		listFn: func() ([]AgentSessionInfo, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]AgentSessionInfo(nil), available...), nil
+		},
+	}
+	a := &archiveCommandAgent{Agent: boundary, archive: func(id string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		for i, s := range available {
+			if s.ID == id {
+				available = append(available[:i], available[i+1:]...)
+				return nil
+			}
+		}
+		return fmt.Errorf("session %s missing", id)
+	}}
+	p := &archiveTopicPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	deleteAttempts := 0
+	p.deleteTopic = func(any) (bool, error) {
+		deleteAttempts++
+		if retryTopicDeletion && deleteAttempts == 1 {
+			return false, errors.New("permission denied")
+		}
+		_ = p.Reply(context.Background(), nil, "[topic removed]")
+		return true, nil
+	}
+	e := NewEngine("test", a, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	send := func(key, content string) {
+		p.clearSent()
+		e.ReceiveMessage(p, &Message{SessionKey: key, UserID: "alice", Content: content})
+	}
+	visible := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			for _, text := range p.getSent() {
+				if strings.Contains(text, want) {
+					return
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("expected user to see %q; replies: %v", want, p.getSent())
+	}
+	send("test:topic-1", "remember this conversation")
+	visible("Fresh conversation thread-1")
+	send("test:topic-1", "/list")
+	visible("Conversation thread-1")
+	send("test:topic-1", "/archive")
+	if retryTopicDeletion {
+		visible(e.i18n.Tf(MsgArchiveTopicFailed, errors.New("permission denied")))
+		send("test:topic-1", "/current")
+		visible("thread-1")
+		send("test:topic-1", "/status")
+		visible("thread-1")
+		send("test:topic-1", "/history")
+		visible("remember this conversation")
+		e.sessions = NewSessionManager(e.sessions.StorePath())
+		send("test:topic-1", "/archive")
+	}
+	visible("[topic removed]")
+	send("test:topic-2", "/list")
+	visible(e.i18n.T(MsgListEmpty))
+	send("test:topic-2", "start another conversation")
+	visible("Fresh conversation thread-2")
+}
+
 type cujTopicDiscoveryAgent struct {
 	cujDirectoryAgent
 }
@@ -3344,4 +3450,74 @@ func TestCUJ_I6_TopicStatusQuestionSurvivesCompletion(t *testing.T) {
 	waitConversationStatus(t, p, ConversationWorking)
 	send("/stop")
 	waitConversationStatus(t, p, ConversationStopped)
+}
+
+// CUJ: typing spans startup and tool work, follows a queued turn, and ends on /stop.
+func TestCUJ_A10_TypingPersistsAcrossStartupToolsAndQueue(t *testing.T) {
+	p := &typingPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	a := &receiptStartAgent{
+		session: &receiptAgentSession{queuingAgentSession: newQueuingSession("typing-cuj")},
+		entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	e := NewEngine("typing", a, []Platform{p}, t.TempDir()+"/sessions.json", LangEnglish)
+	e.display.ToolMessages = true
+	t.Cleanup(func() { _ = e.Stop() })
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	send := func(id, content string) {
+		e.ReceiveMessage(p, &Message{SessionKey: "test:typing-user", Platform: "test", UserID: "user", MessageID: id, Content: content, ReplyCtx: id})
+	}
+	awaitSend := func(n int) {
+		env.waitFor("agent send", time.Second, func() bool {
+			a.session.sendMu.Lock()
+			defer a.session.sendMu.Unlock()
+			return len(a.session.sendCalls) >= n
+		})
+	}
+
+	// User action 1: start a task; typing is already visible during startup.
+	send("first", "First task")
+	select {
+	case <-a.entered:
+	case <-time.After(time.Second):
+		t.Fatal("startup not reached")
+	}
+	if !p.isTyping("first") {
+		t.Fatal("typing missing during agent startup")
+	}
+	close(a.release)
+	awaitSend(1)
+	a.session.events <- Event{Type: EventThinking, Content: "Thinking"}
+	a.session.events <- Event{Type: EventText, Content: "Progress before tool"}
+	a.session.events <- Event{Type: EventToolUse, ToolName: "shell", ToolInput: "pwd"}
+	a.session.events <- Event{Type: EventToolResult, ToolName: "shell", Content: "done"}
+	a.session.events <- Event{Type: EventResult, Done: false}
+	a.session.events <- Event{Type: EventText, Content: "First answer"}
+	env.waitFor("tool progress", time.Second, func() bool {
+		return strings.Contains(strings.Join(p.getSent(), "\n"), "Progress before tool")
+	})
+	p.assertDeliveredWhileTyping(t, "Progress before tool", true)
+
+	// User action 2: queue a follow-up while generation is still in progress.
+	send("second", "Follow-up task")
+	env.waitFor("queue notice", time.Second, func() bool {
+		return strings.Contains(strings.Join(p.getSent(), "\n"), e.i18n.T(MsgMessageQueued))
+	})
+	if !p.isTyping("first") {
+		t.Fatal("non-terminal result stopped typing")
+	}
+	a.session.events <- Event{Type: EventResult, Content: "First answer", Done: true}
+	awaitSend(2)
+	p.assertDeliveredWhileTyping(t, "First answer", false)
+	if p.isTyping("first") || !p.isTyping("second") {
+		t.Fatal("typing did not move to queued turn")
+	}
+
+	// User action 3: cancel the running follow-up.
+	send("stop", "/stop")
+	env.waitFor("typing stopped", time.Second, func() bool { return !p.isTyping("second") })
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stops != 2 {
+		t.Fatalf("typing stopped %d times, want 2 completed turns", p.stops)
+	}
 }

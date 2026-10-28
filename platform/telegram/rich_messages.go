@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net/http"
@@ -181,6 +182,8 @@ func (p *Platform) sendRichChunks(ctx context.Context, bot telegramBot, rc reply
 			if err := p.sendRegularRichFallback(ctx, bot, params, chunk); err != nil {
 				return err
 			}
+		} else {
+			p.refreshTyping(rc)
 		}
 	}
 	return nil
@@ -210,6 +213,24 @@ func (p *Platform) sendRegularRichFallback(ctx context.Context, bot telegramBot,
 				return fmt.Errorf("telegram: send plain rich fallback: %s", core.RedactToken(err.Error(), p.token))
 			}
 		}
+		p.refreshTyping(replyContext{chatID: rich.ChatID, threadID: rich.MessageThreadID})
 	}
 	return nil
+}
+
+// Rich Markdown does not parse Markdown inside paragraph HTML. Isolate literal
+// choices there while leaving the original prompt's tables/code untouched.
+func richNumberedButtonContent(prompt string, original, numbered [][]core.ButtonOption) string {
+	var body strings.Builder
+	body.WriteString(prompt)
+	lineBreaks := strings.NewReplacer("\r\n", "<br>", "\n", "<br>", "\r", "<br>")
+	for i, row := range original {
+		for j, button := range row {
+			if body.Len() > 0 {
+				body.WriteString("\n\n")
+			}
+			fmt.Fprintf(&body, "<p><b>%s:</b> %s</p>", html.EscapeString(numbered[i][j].Text), lineBreaks.Replace(html.EscapeString(button.Text)))
+		}
+	}
+	return body.String()
 }

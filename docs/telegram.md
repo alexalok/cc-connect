@@ -2,6 +2,8 @@
 
 This guide walks you through connecting **cc-connect** to Telegram, so you can chat with your local Claude Code via a Telegram bot.
 
+The native **typing…** indicator stays active during agent startup, thinking, and tool use. It refreshes every three seconds and after progress messages, resumes after temporary connection failures, and stops when the turn completes or is cancelled. This works independently for each chat topic and requires no configuration.
+
 ## Prerequisites
 
 - A Telegram account
@@ -207,6 +209,21 @@ and the answer at the end. Explicit rich-formatting rejection reflows the conten
 into regular messages without disclosure markup. A network failure with uncertain
 delivery does not trigger duplicate sends. Permission prompts remain separate so
 the user can act on them immediately.
+
+### Button text limits
+
+Button labels are limited to 32 Unicode characters by default. If any label
+exceeds the limit or contains a line break, the message shows all full choices
+as **Option 1**, **Option 2**, and so on. The buttons use the same short labels;
+selecting one still sends the original choice. Short labels stay unchanged.
+
+Set `button_text_limit = 32` in the existing `[projects.platforms.options]`
+section to adjust the limit (minimum 16). Full choices remain available even
+when their text spans several messages; oversized button messages fall back to
+plain text so splitting cannot alter literal choices. Rich prompts keep tables and
+code formatted while numbered choices remain literal. If their generated rich
+content exceeds the rich-message limit, the message uses the same exact-text
+plain fallback rather than splitting the choice markup.
 
 ---
 
