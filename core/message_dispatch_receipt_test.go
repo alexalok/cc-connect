@@ -26,6 +26,12 @@ func TestBusyMessageMode_ReadReceiptWaitsForSteeringConfirmation(t *testing.T) {
 		t.Run(map[bool]string{false: "accepted", true: "rejected"}[rejected], func(t *testing.T) {
 			env := newDispatchEnv(t, "steer")
 			s := &receiptSteerSession{dispatchSession: env.session, entered: make(chan struct{}), ack: make(chan error, 1)}
+			t.Cleanup(func() {
+				select {
+				case s.ack <- errors.New("test finished"):
+				default:
+				}
+			})
 			env.engine.agent = &controllableAgent{nextSession: s}
 			env.send("first", "first task", 1000)
 			env.awaitSends(1)
@@ -40,6 +46,11 @@ func TestBusyMessageMode_ReadReceiptWaitsForSteeringConfirmation(t *testing.T) {
 			case <-time.After(3 * time.Second):
 				t.Fatal("steer not attempted")
 			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("steering confirmation blocked the platform callback")
+			}
 			if reads.Load() != 0 {
 				t.Fatal("message marked read before native steering confirmation")
 			}
@@ -48,11 +59,11 @@ func TestBusyMessageMode_ReadReceiptWaitsForSteeringConfirmation(t *testing.T) {
 				err = errors.New("native steer rejected")
 			}
 			s.ack <- err
-			select {
-			case <-done:
-			case <-time.After(3 * time.Second):
-				t.Fatal("steer did not return")
+			confirmation := MsgMessageSteered
+			if rejected {
+				confirmation = MsgMessageSteerFailed
 			}
+			env.awaitVisible(env.engine.i18n.T(confirmation))
 			want := int32(1)
 			if rejected {
 				want = 0

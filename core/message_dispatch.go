@@ -44,8 +44,87 @@ func (e *Engine) prepareQueuedMessage(p Platform, msg *Message, raw string) bool
 	return false
 }
 
-// steerBusyMessage returns true when delivery was attempted or the message was
-// handled. Startup, unsupported backends, and completed turns use the queue path.
+// deferBusyMessage serializes steering and subsequent user input outside the
+// platform callback. This includes /queue so a late steering fallback cannot
+// be overtaken by newer queued input. Control commands bypass this dispatcher.
+func (e *Engine) deferBusyMessage(p Platform, msg *Message, sessions *SessionManager, agent Agent, key, workspace string) bool {
+	session := sessions.FindByID(sessions.ActiveSessionID(msg.SessionKey))
+	if session == nil {
+		return false
+	}
+	e.interactiveMu.Lock()
+	state := e.interactiveStates[key]
+	e.interactiveMu.Unlock()
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	as := state.agentSession
+	_, supported := as.(MessageSteerer)
+	if as == nil || state.stopped || (state.pendingSteering == 0 && (msg.forceQueue || !supported || !as.Alive() || !session.Busy())) {
+		state.mu.Unlock()
+		return false
+	}
+	if state.pendingSteering >= e.maxQueuedMessages {
+		depth := state.pendingSteering
+		state.mu.Unlock()
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgQueueFull, depth))
+		return true
+	}
+	previous := state.steeringTail
+	done := make(chan struct{})
+	state.steeringTail = done
+	state.pendingSteering++
+	messageID := state.currentMessageID
+	state.mu.Unlock()
+	stoppedSignal := state.stopSignal()
+	go func() {
+		defer func() {
+			state.mu.Lock()
+			state.pendingSteering--
+			if state.steeringTail == done {
+				state.steeringTail = nil
+			}
+			state.mu.Unlock()
+			close(done)
+			if !session.Busy() {
+				e.scheduleAgentSessionIdleClose(key, state)
+			}
+		}()
+		if previous != nil {
+			select {
+			case <-previous:
+			case <-e.ctx.Done():
+				return
+			case <-stoppedSignal:
+				e.reply(p, msg.ReplyCtx, e.i18n.T(MsgMessageSteerFailed))
+				return
+			}
+		}
+		e.interactiveMu.Lock()
+		current := e.interactiveStates[key] == state
+		state.mu.Lock()
+		stopped := state.stopped
+		sameTurn := state.currentMessageID == messageID
+		state.mu.Unlock()
+		e.interactiveMu.Unlock()
+		if e.ctx.Err() != nil {
+			return
+		}
+		if !current || stopped || !as.Alive() || sessions.ActiveSessionID(msg.SessionKey) != session.ID || session.IsArchived() || session.isArchiving() {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgMessageSteerFailed))
+			return
+		}
+		if !sameTurn {
+			msg.forceQueue = true
+		}
+		e.dispatchUserMessageNow(p, msg, sessions, agent, key, workspace, true)
+	}()
+	return true
+}
+
+// steerBusyMessage returns false only when no input was delivered, allowing
+// the regular queue path. It runs in the ordered background dispatcher.
 func (e *Engine) steerBusyMessage(p Platform, msg *Message, session *Session, sessions *SessionManager, key string) bool {
 	e.interactiveMu.Lock()
 	state := e.interactiveStates[key]

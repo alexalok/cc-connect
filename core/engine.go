@@ -623,6 +623,8 @@ type interactiveState struct {
 	currentTurnUserMessageTimeMs int64
 	// Steering advances inbound deduplication, but must not expire older /queue messages.
 	lastSteeredUserMessageTimeMs int64
+	steeringTail                 <-chan struct{} // serializes native steering without blocking platform input
+	pendingSteering              int
 }
 
 // latestUserMessageWatermarkLocked returns the highest UserMessageTimeMs among
@@ -3254,6 +3256,13 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 }
 
 func (e *Engine) dispatchUserMessage(p Platform, msg *Message, sessions *SessionManager, agent Agent, interactiveKey, resolvedWorkspace string) {
+	if e.busyMessageMode == "steer" && e.deferBusyMessage(p, msg, sessions, agent, interactiveKey, resolvedWorkspace) {
+		return
+	}
+	e.dispatchUserMessageNow(p, msg, sessions, agent, interactiveKey, resolvedWorkspace, false)
+}
+
+func (e *Engine) dispatchUserMessageNow(p Platform, msg *Message, sessions *SessionManager, agent Agent, interactiveKey, resolvedWorkspace string, allowSteering bool) {
 	if e.discardStaleUserMessageIfNeeded(interactiveKey, msg) {
 		return
 	}
@@ -3314,7 +3323,7 @@ func (e *Engine) dispatchUserMessage(p Platform, msg *Message, sessions *Session
 			}
 		}
 		// ── end self-heal; queueing path below is unchanged ────────────────
-		if !msg.forceQueue && e.busyMessageMode == "steer" && e.steerBusyMessage(p, msg, session, sessions, interactiveKey) {
+		if allowSteering && !msg.forceQueue && e.steerBusyMessage(p, msg, session, sessions, interactiveKey) {
 			return
 		}
 		// Session is busy — try to queue the message for the running turn
@@ -3604,6 +3613,7 @@ func (e *Engine) drainOrphanedQueue(session *Session, sessions *SessionManager, 
 	state.mu.Unlock()
 	if alive {
 		e.startUnsolicitedReader(state, session, sessions, interactiveKey, workspaceDir)
+		e.scheduleAgentSessionIdleClose(interactiveKey, state)
 	}
 }
 
@@ -4811,6 +4821,7 @@ func (e *Engine) scheduleAgentSessionIdleClose(sessionKey string, state *interac
 		state.eventsNeedResync ||
 		state.pending != nil ||
 		state.pendingUserInput != nil ||
+		state.pendingSteering > 0 ||
 		len(state.pendingMessages) > 0 {
 		state.mu.Unlock()
 		cancel()
@@ -4845,11 +4856,13 @@ func (e *Engine) cleanupInteractiveStateForIdleToken(sessionKey string, expected
 	state.mu.Lock()
 	if state.agentSessionIdleToken != token ||
 		state.agentSession == nil ||
+		(state.busySession != nil && state.busySession.Busy()) ||
 		!state.agentSession.Alive() ||
 		state.stopped ||
 		state.eventsNeedResync ||
 		state.pending != nil ||
 		state.pendingUserInput != nil ||
+		state.pendingSteering > 0 ||
 		len(state.pendingMessages) > 0 {
 		state.mu.Unlock()
 		e.interactiveMu.Unlock()
