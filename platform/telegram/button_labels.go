@@ -72,3 +72,22 @@ func (p *Platform) prepareButtonLabels(content string, buttons [][]core.ButtonOp
 	}
 	return body.String(), htmlBody.String(), rows
 }
+
+// splitButtonMessage preserves every byte of valid Unicode text while keeping
+// each plain-text chunk within Telegram's UTF-16 message limit.
+func splitButtonMessage(content string) []string {
+	var chunks []string
+	start, units := 0, 0
+	for i, r := range content {
+		width := 1
+		if r > 0xffff {
+			width = 2
+		}
+		if units+width > telegramMaxMessageLen {
+			chunks = append(chunks, content[start:i])
+			start, units = i, 0
+		}
+		units += width
+	}
+	return append(chunks, content[start:])
+}

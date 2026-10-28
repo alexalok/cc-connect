@@ -154,7 +154,8 @@ selecting one still sends the original choice. Short labels stay unchanged.
 
 Set `button_text_limit = 32` in the existing `[projects.platforms.options]`
 section to adjust the limit (minimum 16). Full choices remain available even
-when their text spans several messages.
+when their text spans several messages; oversized button messages fall back to
+plain text so splitting cannot alter literal choices.
 
 ---
 

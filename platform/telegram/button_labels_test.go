@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/chenhg5/cc-connect/core"
@@ -207,10 +208,16 @@ func TestNew_ButtonTextLimit(t *testing.T) {
 	}
 }
 
-type buttonMessageLimitBot struct{ buttonRecordingBot }
+type buttonMessageLimitBot struct {
+	buttonRecordingBot
+	parseErrorFirst bool
+}
 
 func (b *buttonMessageLimitBot) SendMessage(ctx context.Context, params *tgbot.SendMessageParams) (*models.Message, error) {
-	if utf8.RuneCountInString(params.Text) > telegramMaxMessageLen {
+	if b.parseErrorFirst && params.ParseMode == models.ParseModeHTML {
+		return nil, fmt.Errorf("can't parse entities")
+	}
+	if len(utf16.Encode([]rune(params.Text))) > telegramMaxMessageLen {
 		return nil, fmt.Errorf("message is too long")
 	}
 	return b.buttonRecordingBot.SendMessage(ctx, params)
@@ -283,5 +290,49 @@ func TestSendWithButtons_NumberedLabelsPreserveLiteralMarkdown(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSendWithButtons_SplitOptionsPreserveLiteralText(t *testing.T) {
+	for name, label := range map[string]string{
+		"entities":    strings.Repeat("&<tag>\"", 1000),
+		"code fences": "```\n" + strings.Repeat("__init__.py & `literal`\n", 300) + "```",
+		"emoji":       strings.Repeat("🙂", 3000),
+	} {
+		for _, parseErrorFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/parse_error_first=%v", name, parseErrorFirst), func(t *testing.T) {
+				bot := &buttonMessageLimitBot{parseErrorFirst: parseErrorFirst}
+				p := &Platform{bot: bot}
+				rows := [][]core.ButtonOption{{{Text: label, Data: "choose"}}, {{Text: "Keep current", Data: "keep"}}}
+				if err := p.SendWithButtons(context.Background(), replyContext{chatID: 42, threadID: 7}, "Question?", rows); err != nil {
+					t.Fatal(err)
+				}
+				var text strings.Builder
+				keyboards := 0
+				for _, sent := range bot.sends {
+					if sent.ParseMode != "" {
+						t.Errorf("oversized literal fallback used parse mode %q", sent.ParseMode)
+					}
+					if !utf8.ValidString(sent.Text) || len(utf16.Encode([]rune(sent.Text))) > telegramMaxMessageLen {
+						t.Fatal("invalid or oversized Unicode chunk")
+					}
+					if sent.ChatID != int64(42) || sent.MessageThreadID != 7 {
+						t.Fatal("lost topic routing")
+					}
+					text.WriteString(sent.Text)
+					if sent.ReplyMarkup != nil {
+						keyboards++
+						keyboard := sent.ReplyMarkup.(*models.InlineKeyboardMarkup).InlineKeyboard
+						if keyboard[0][0].Text != "Option 1" || keyboard[0][0].CallbackData != "choose" || keyboard[1][0].Text != "Option 2" || keyboard[1][0].CallbackData != "keep" {
+							t.Fatal("lost option labels or callbacks")
+						}
+					}
+				}
+				want := "Question?\n\n**Option 1:** " + label + "\n\n**Option 2:** Keep current"
+				if text.String() != want || keyboards != 1 || len(bot.sends) < 2 {
+					t.Fatalf("split content changed: got length=%d want length=%d keyboards=%d messages=%d", text.Len(), len(want), keyboards, len(bot.sends))
+				}
+			})
+		}
 	}
 }

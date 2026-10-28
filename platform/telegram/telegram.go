@@ -1365,13 +1365,14 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 			params.Text = content
 			params.ParseMode = ""
 			_, err = bot.SendMessage(ctx, params)
-		} else if strings.Contains(errMsg, "message is too long") {
+		}
+		if err != nil && strings.Contains(err.Error(), "message is too long") {
 			// Handle message too long: first chunk with buttons, rest without
 			slog.Warn("telegram: message too long, splitting into chunks",
 				"method", "SendWithButtons",
 				"html_len", len(html),
 			)
-			return p.sendChunkedWithButtons(ctx, bot, rc, html, rows)
+			return p.sendChunkedWithButtons(ctx, bot, rc, content, rows)
 		}
 		if err != nil {
 			return fmt.Errorf("telegram: sendWithButtons: %w", err)
@@ -1607,32 +1608,22 @@ func (p *Platform) sendChunked(ctx context.Context, bot telegramBot, rc replyCon
 	return nil
 }
 
-// sendChunkedWithButtons splits a message that's too long and sends it as multiple messages.
-// The first chunk includes the inline keyboard buttons.
-func (p *Platform) sendChunkedWithButtons(ctx context.Context, bot telegramBot, rc replyContext, html string, rows [][]models.InlineKeyboardButton) error {
-	chunks := core.SplitMessageCodeFenceAware(html, telegramMaxMessageLen)
-	for i, chunk := range chunks {
+// sendChunkedWithButtons uses the original text for oversized button messages.
+// Splitting escaped HTML can break entities or tags, and a Markdown-aware split
+// can change literal option text. Keep the content verbatim and attach the
+// keyboard once, to the first chunk.
+func (p *Platform) sendChunkedWithButtons(ctx context.Context, bot telegramBot, rc replyContext, content string, rows [][]models.InlineKeyboardButton) error {
+	for i, chunk := range splitButtonMessage(content) {
 		params := &tgbot.SendMessageParams{
 			ChatID:          rc.chatID,
 			MessageThreadID: rc.threadID,
 			Text:            chunk,
-			ParseMode:       models.ParseModeHTML,
 		}
-		// Only first chunk gets the buttons
 		if i == 0 {
 			params.ReplyMarkup = &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 		}
 		if _, err := bot.SendMessage(ctx, params); err != nil {
-			// If HTML fails, try plain text
-			if strings.Contains(err.Error(), "can't parse") {
-				params.Text = chunk
-				params.ParseMode = ""
-				if _, err2 := bot.SendMessage(ctx, params); err2 != nil {
-					return fmt.Errorf("telegram: send chunk %d: %w", i, err2)
-				}
-			} else {
-				return fmt.Errorf("telegram: send chunk %d: %w", i, err)
-			}
+			return fmt.Errorf("telegram: send button chunk %d: %w", i, err)
 		}
 	}
 	return nil
