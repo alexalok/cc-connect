@@ -3508,6 +3508,45 @@ func TestCUJ_A12_SettingsChangeDuringStartupRunsFollowup(t *testing.T) {
 	}
 }
 
+func TestCUJ_A13_RecallDuringStartupCancelsFirstMessage(t *testing.T) {
+	env := newReceiptAckEnv(t, nil)
+	env.engine.SetBusyMessageMode("steer")
+	replacement := &receiptAgentSession{queuingAgentSession: newQueuingSession("replacement")}
+	starts := 0
+	env.engine.agent = &controllableAgent{startSessionFn: func(ctx context.Context, id string) (AgentSession, error) {
+		starts++
+		if starts == 1 {
+			return env.startup.StartSession(ctx, id)
+		}
+		return replacement, nil
+	}}
+	env.send("first", "recalled task", 1000)
+	env.awaitStartup()
+	beforeRecall := len(env.plat.getSent())
+	responsiveDispatch(t, func() {
+		env.engine.ReceiveMessage(env.plat, &Message{Platform: "test", MessageID: "first", Recalled: true})
+	})
+	if len(env.plat.getSent()) != beforeRecall {
+		t.Fatal("recall should cancel startup silently")
+	}
+	env.send("replacement", "replacement task", 2000)
+	close(env.startup.release)
+	env.waitFor("replacement reaches agent", 3*time.Second, func() bool {
+		replacement.sendMu.Lock()
+		defer replacement.sendMu.Unlock()
+		return len(replacement.sendCalls) == 1
+	})
+	env.startup.session.sendMu.Lock()
+	sent := len(env.startup.session.sendCalls)
+	env.startup.session.sendMu.Unlock()
+	if sent != 0 || env.startup.session.Alive() {
+		t.Fatal("recalled startup was executed or left alive")
+	}
+	replacement.events <- Event{Type: EventResult, Content: "replacement answered", Done: true}
+	env.awaitVisible("replacement answered")
+	env.assertReceipts("first", "replacement")
+}
+
 // CUJ: typing spans startup and tool work, follows a queued turn, and ends on /stop.
 func TestCUJ_A10_TypingPersistsAcrossStartupToolsAndQueue(t *testing.T) {
 	p := &typingPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}

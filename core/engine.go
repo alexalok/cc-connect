@@ -3361,7 +3361,7 @@ sessionLocked:
 	// instead of dropped (issue #565). This is still needed after idle auto-
 	// reset because cleanupInteractiveState may remove the early placeholder.
 	e.ensureInteractiveStateForQueueing(interactiveKey, p, msg.ReplyCtx, session)
-	if !e.claimDeferredTurn(interactiveKey, msg) {
+	if !e.claimUserTurn(interactiveKey, msg) {
 		session.Unlock(lockGen)
 		return
 	}
@@ -4420,14 +4420,15 @@ func (e *Engine) workspaceContext(workspace, sessionKey string) (Agent, *Session
 }
 
 // getOrCreateInteractiveStateWith accepts an optional agent override for multi-workspace mode.
-// adoptPendingFromPlaceholder copies pendingMessages from an existing placeholder
-// state to newState so queued messages are not lost when the map entry is replaced.
+// adoptPendingFromPlaceholder preserves the initiating message's recall ownership
+// and pendingMessages when a started agent replaces its placeholder.
 // Must be called under interactiveMu.
 func adoptPendingFromPlaceholder(existing, newState *interactiveState) {
 	if existing == nil || existing == newState {
 		return
 	}
 	existing.mu.Lock()
+	newState.currentMessageID = existing.currentMessageID
 	if len(existing.pendingMessages) > 0 {
 		newState.pendingMessages = existing.pendingMessages
 		existing.pendingMessages = nil

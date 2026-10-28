@@ -383,3 +383,31 @@ func TestBusyMessageMode_StartupCleanupWaitsForLateShutdown(t *testing.T) {
 		t.Fatal("teardown wait did not finish after late agent shutdown")
 	}
 }
+
+func TestBusyMessageMode_RecallBeforeFirstSendCancelsAdoptedStartup(t *testing.T) {
+	env := newReceiptAckEnv(t, nil)
+	close(env.startup.release)
+	const key = "test:receipt-user"
+	session := env.engine.sessions.GetOrCreateActive(key)
+	gen, _ := session.TryLock()
+	env.engine.ensureInteractiveStateForQueueing(key, env.plat, "first", session)
+	// A foreground worker has claimed its message, but has not sent it yet.
+	env.engine.interactiveMu.Lock()
+	placeholder := env.engine.interactiveStates[key]
+	placeholder.mu.Lock()
+	placeholder.currentMessageID = "first"
+	placeholder.mu.Unlock()
+	env.engine.interactiveMu.Unlock()
+	state := env.engine.getOrCreateInteractiveStateWith(key, env.plat, "first", session, env.engine.sessions, nil, "", gen)
+	if state == nil {
+		t.Fatal("agent startup failed")
+	}
+	env.engine.ReceiveMessage(env.plat, &Message{Platform: "test", MessageID: "first", Recalled: true})
+	env.waitFor("adopted startup canceled by recall", time.Second, func() bool { return !env.startup.session.Alive() })
+	if session.canStartTurn(gen) {
+		t.Fatal("recalled worker still owns the busy generation")
+	}
+	if sent := env.plat.getSent(); len(sent) != 0 {
+		t.Fatalf("recall should be silent, got %v", sent)
+	}
+}

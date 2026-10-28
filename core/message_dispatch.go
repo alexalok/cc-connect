@@ -129,9 +129,9 @@ func (e *Engine) deferBusyMessage(p Platform, msg *Message, sessions *SessionMan
 	return true
 }
 
-// claimDeferredTurn transfers recall ownership to the active message before
-// the foreground goroutine starts. Recall can then stop its startup as usual.
-func (e *Engine) claimDeferredTurn(key string, msg *Message) bool {
+// claimUserTurn registers recall ownership before the foreground goroutine
+// starts, including the first message whose agent startup is still pending.
+func (e *Engine) claimUserTurn(key string, msg *Message) bool {
 	e.interactiveMu.Lock()
 	defer e.interactiveMu.Unlock()
 	state := e.interactiveStates[key]
@@ -145,8 +145,8 @@ func (e *Engine) claimDeferredTurn(key string, msg *Message) bool {
 		if recalled {
 			return false
 		}
-		state.currentMessageID = msg.MessageID
 	}
+	state.currentMessageID = msg.MessageID
 	return true
 }
 
