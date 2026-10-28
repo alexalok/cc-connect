@@ -28,20 +28,32 @@ func (a *Agent) ArchiveSessionWithProvider(ctx context.Context, sessionID, provi
 	ctx, cancel := context.WithTimeout(ctx, appServerRequestTimeout)
 	defer cancel()
 	a.mu.RLock()
-	codexHome, err := a.sessionCodexHomeForProviderLocked(providerName)
-	if err != nil {
-		a.mu.RUnlock()
-		return fmt.Errorf("codex: archive: resolve profile: %w", err)
-	}
+	codexHome := a.codexHome
 	extraEnv := a.mergedSessionEnvLocked()
+	foundProvider := providerName == ""
 	if providerName != "" {
 		for _, provider := range a.providers {
 			if provider.Name == providerName {
+				foundProvider = true
 				extraEnv = append([]string(nil), a.configEnv...)
 				extraEnv = append(extraEnv, codexProviderEnv(provider)...)
 				extraEnv = append(extraEnv, a.sessionEnv...)
 				break
 			}
+		}
+	}
+	if !foundProvider {
+		a.mu.RUnlock()
+		return fmt.Errorf("codex: saved provider %q is not configured", providerName)
+	}
+	// Match StartSession: only full-profile listing pins relative homes to the
+	// bridge directory. Otherwise the subprocess resolves them in workDir.
+	if a.listAllSessions {
+		var err error
+		codexHome, err = absoluteCodexHome(codexHome, extraEnv)
+		if err != nil {
+			a.mu.RUnlock()
+			return fmt.Errorf("codex: archive: resolve profile: %w", err)
 		}
 	}
 	s := &appServerSession{
