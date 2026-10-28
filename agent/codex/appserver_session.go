@@ -1253,7 +1253,7 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 	case "reasoning":
 		text := appServerReasoningText(item)
 		if text != "" {
-			s.emit(core.Event{Type: core.EventThinking, Content: text})
+			s.emit(core.Event{Type: core.EventThinking, Content: text, PublicSummary: true})
 		}
 
 	case "agentMessage":
@@ -1335,15 +1335,8 @@ func appServerReasoningText(item map[string]any) string {
 			}
 		}
 	}
-	if len(parts) == 0 {
-		if content, ok := item["content"].([]any); ok {
-			for _, entry := range content {
-				if text, ok := entry.(string); ok && strings.TrimSpace(text) != "" {
-					parts = append(parts, text)
-				}
-			}
-		}
-	}
+	// The content field may contain raw reasoning. Only the explicitly public
+	// summary is suitable for display on a messaging platform.
 	return strings.Join(parts, "\n")
 }
 
@@ -1588,7 +1581,7 @@ func (s *appServerSession) flushPendingAsThinking() {
 
 	for _, text := range msgs {
 		if strings.TrimSpace(text) != "" {
-			s.emit(core.Event{Type: core.EventThinking, Content: text})
+			s.emit(core.Event{Type: core.EventThinking, Content: text, PublicSummary: true})
 		}
 	}
 }

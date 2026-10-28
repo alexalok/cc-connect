@@ -30,6 +30,25 @@ func TestAppServerSession_ApplyThreadRuntimeState(t *testing.T) {
 	}
 }
 
+func TestAppServerSession_ProgressContainsOnlyPublicSummaries(t *testing.T) {
+	s := &appServerSession{events: make(chan core.Event, 4)}
+	s.handleItemCompleted(map[string]any{"type": "reasoning", "content": []any{"private raw reasoning"}})
+	if len(s.events) != 0 {
+		t.Fatal("raw reasoning was emitted as progress")
+	}
+	s.handleItemCompleted(map[string]any{"type": "reasoning", "summary": []any{"Public summary"}, "content": []any{"private raw reasoning"}})
+	event := <-s.events
+	if event.Type != core.EventThinking || !event.PublicSummary || event.Content != "Public summary" {
+		t.Fatalf("unexpected summary: %+v", event)
+	}
+	s.pendingMsgs = []string{"Checking the tests."}
+	s.flushPendingAsThinking()
+	event = <-s.events
+	if !event.PublicSummary || event.Content != "Checking the tests." {
+		t.Fatalf("commentary not marked as public: %+v", event)
+	}
+}
+
 func TestAppServerSession_HandleRateLimitsUpdatedCachesUsage(t *testing.T) {
 	s := &appServerSession{}
 	raw, err := json.Marshal(appServerRateLimitsResponse{
