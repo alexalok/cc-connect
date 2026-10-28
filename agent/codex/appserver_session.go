@@ -471,6 +471,10 @@ func (s *appServerSession) storeContextUsage(usage *core.ContextUsage) {
 }
 
 func (s *appServerSession) Send(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment) error {
+	return s.send(prompt, messageID, images, files, nil)
+}
+
+func (s *appServerSession) send(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment, skill *core.Skill) error {
 	if !s.alive.Load() {
 		return fmt.Errorf("session is closed")
 	}
@@ -509,10 +513,21 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 			"path": path,
 		})
 	}
+	if skill != nil {
+		input = append(input, map[string]any{
+			"type": "skill",
+			"name": skill.Name,
+			"path": filepath.Join(skill.Source, "SKILL.md"),
+		})
+	}
 
 	params := map[string]any{
 		"threadId": threadID,
 		"input":    input,
+		// Persist the origin in native UI events so the transcript mirror can
+		// distinguish bot turns from other clients without matching user text.
+		"turnTrigger":         mirrorTurnOrigin,
+		"clientUserMessageId": fmt.Sprintf("%s:%s:%d", mirrorTurnOrigin, messageID, time.Now().UnixNano()),
 	}
 	if model := s.GetModel(); model != "" {
 		params["model"] = model

@@ -111,12 +111,16 @@ type Platform struct {
 	groupReplyAll         bool
 	shareSessionInChannel bool
 	enableReactions       bool
+	readReceipts          bool
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
 	topicRouting          privateTopicRouting
+	topicSyncChatID       int64
+	topicSyncInterval     time.Duration
 	i18n                  *core.I18n
 	downtime              *downtimeDrain
 	processedCursor       updateCursor // protected by mu
+	topicStatus           *topicStatusUpdater
 
 	mu                  sync.RWMutex
 	bot                 telegramBot
@@ -146,6 +150,15 @@ func New(opts map[string]any) (core.Platform, error) {
 	}
 	allowFrom, _ := opts["allow_from"].(string)
 	core.CheckAllowFrom("telegram", allowFrom)
+	topicChatID, topicInterval, err := parseTopicSyncOptions(opts, allowFrom)
+	if err != nil {
+		return nil, err
+	}
+
+	status, err := newTopicStatusUpdater(opts)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build HTTP client with optional proxy support.
 	// Timeout must exceed the server-side long-poll duration (pollTimeout − 1s = 59s)
@@ -168,6 +181,10 @@ func New(opts map[string]any) (core.Platform, error) {
 	groupReplyAll, _ := opts["group_reply_all"].(bool)
 	shareSessionInChannel, _ := opts["share_session_in_channel"].(bool)
 	enableReactions, _ := opts["enable_reactions"].(bool)
+	readReceipts := true
+	if v, ok := opts["read_receipts"].(bool); ok {
+		readReceipts = v
+	}
 
 	// Default to "compact" so streaming edits work out of the box. Telegram has
 	// no rich card UI, so "card" is normalized to "compact". Users can opt out
@@ -190,11 +207,15 @@ func New(opts map[string]any) (core.Platform, error) {
 	return &Platform{
 		token:                 token,
 		allowFrom:             allowFrom,
+		topicSyncChatID:       topicChatID,
+		topicSyncInterval:     topicInterval,
 		groupReplyAll:         groupReplyAll,
 		shareSessionInChannel: shareSessionInChannel,
 		enableReactions:       enableReactions,
+		readReceipts:          readReceipts,
 		progressStyle:         progressStyle,
 		httpClient:            httpClient,
+		topicStatus:           status,
 	}, nil
 }
 
@@ -245,6 +266,9 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 	p.selfUser = nil
 
 	go p.connectLoop(ctx)
+	if p.topicStatus != nil {
+		go p.runTopicStatus(ctx)
+	}
 	return nil
 }
 
@@ -459,7 +483,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 	}
 
 	rctx := replyContext{chatID: msg.Chat.ID, threadID: threadID, messageID: msg.ID}
-	if p.enableReactions {
+	if p.enableReactions && !p.readReceipts {
 		go p.reactToMessage(ctx, msg.Chat.ID, msg.ID, "⚡")
 	}
 	botName := p.botUsername()
@@ -593,6 +617,9 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 }
 
 func (p *Platform) dispatchMessage(msg *core.Message, tgMsg *models.Message) {
+	if p.readReceipts {
+		msg.OnDelivered = p.readReceipt(tgMsg.Chat.ID, tgMsg.ID)
+	}
 	// Enrich with platform-specific context (reply quotes, location text, etc.)
 	var extras []string
 	if replyText := enrichReplyContent(tgMsg); replyText != "" {
@@ -644,7 +671,12 @@ func (p *Platform) reactToMessage(ctx context.Context, chatID int64, messageID i
 }
 
 func (p *Platform) buildSessionKey(chatID int64, threadID int, userID int64) string {
-	if p.shareSessionInChannel {
+	if p.topicSyncChatID < 0 && chatID == p.topicSyncChatID && threadID != 0 {
+		// Keep persisted topic destinations unambiguous even after sync moves
+		// elsewhere. Zero is a shared-user sentinel, never a Telegram user ID.
+		return fmt.Sprintf("telegram:%d:%d:0", chatID, threadID)
+	}
+	if p.sharedSessionForChat(chatID) {
 		if threadID != 0 {
 			return fmt.Sprintf("telegram:%d:%d", chatID, threadID)
 		}
@@ -654,6 +686,12 @@ func (p *Platform) buildSessionKey(chatID int64, threadID int, userID int64) str
 		return fmt.Sprintf("telegram:%d:%d:%d", chatID, threadID, userID)
 	}
 	return fmt.Sprintf("telegram:%d:%d", chatID, userID)
+}
+
+func (p *Platform) sharedSessionForChat(chatID int64) bool {
+	// A synced group topic represents one native conversation, regardless of
+	// which allowed user replies. Keep other chats' configured session policy.
+	return p.shareSessionInChannel || (p.topicSyncChatID < 0 && chatID == p.topicSyncChatID)
 }
 
 func buildChannelKey(chatID int64, threadID int) string {

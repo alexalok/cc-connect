@@ -54,6 +54,50 @@ type ReplyContextReconstructor interface {
 	ReconstructReplyCtx(sessionKey string) (any, error)
 }
 
+// SessionDiscoverer finds persistent, top-level conversations created since the
+// supplied time. Discovery must be read-only and must exclude child agents.
+type SessionDiscoverer interface {
+	DiscoverSessions(ctx context.Context, since time.Time) ([]AgentSessionInfo, error)
+}
+
+// SessionArchiveSource reports positively archived IDs among known sessions.
+// Missing sessions and incomplete reads must never be interpreted as archives.
+type SessionArchiveSource interface {
+	ArchivedSessionIDs(ctx context.Context, sessionIDs []string) ([]string, error)
+}
+
+// SessionTopicDeleter removes a topic in the platform's configured sync target,
+// including its messages. It returns false for keys outside that target or
+// without a topic, and treats already deleted topics as successful cleanup.
+type SessionTopicDeleter interface {
+	DeleteSessionTopic(ctx context.Context, sessionKey string) (bool, error)
+}
+
+// SessionMessage is a completed, user-visible message from a native chat.
+// ID must be stable across reads/restarts and distinct for repeated messages.
+type SessionMessage struct {
+	ID          string
+	Role        string // user or assistant
+	Content     string
+	Attachments int // media represented by a localized placeholder
+}
+
+// SessionMessageSource supplies visible conversation messages in order, without
+// starting an agent turn. It excludes instructions, reasoning, tools, and turns
+// already delivered by this bridge. Validation checks any backend requirements.
+type SessionMessageSource interface {
+	ValidateSessionMessageSync() error
+	ReadSessionMessages(ctx context.Context, sessionID string) ([]SessionMessage, error)
+}
+
+// SessionTopicCreator opts a platform into creating topics for discovered chats.
+// Target is a stable, explicitly configured destination, never inferred from
+// incoming messages. CreateSessionTopic returns the normal inbound session key.
+type SessionTopicCreator interface {
+	SessionTopicSyncConfig() (target string, interval time.Duration)
+	CreateSessionTopic(ctx context.Context, title string) (sessionKey string, err error)
+}
+
 // RelayGroupVisibilityTarget is an optional interface for platforms that
 // want to customise the session key used when echoing relay request /
 // response messages into the group chat for visibility.  Platforms that
@@ -398,6 +442,14 @@ type AgentSession interface {
 	Close() error
 }
 
+// ReceiptAwareSession can confirm that the agent accepted a particular input.
+// Implementations call onDelivered at most once, only after an acknowledgment
+// from the agent. A successful pipe write or bridge queue insertion is not enough.
+// Agents without this capability must not produce delivery receipts.
+type ReceiptAwareSession interface {
+	SendWithReceipt(prompt, messageID string, images []ImageAttachment, files []FileAttachment, onDelivered func()) error
+}
+
 // PermissionResult represents the user's decision on a permission request.
 type PermissionResult struct {
 	Behavior     string         `json:"behavior"`               // "allow" or "deny"
@@ -406,7 +458,8 @@ type PermissionResult struct {
 }
 
 // UserInputSteerer delivers an answer to a non-blocking question while the agent
-// continues working. False means there is no active turn; use normal Send instead.
+// continues working. True with no error confirms the agent accepted the input.
+// False means there is no active turn; use normal Send instead.
 type UserInputSteerer interface {
 	SteerUserInput(prompt string) (bool, error)
 }
@@ -594,6 +647,19 @@ type SkillCatalogProvider interface {
 	ListSkills(ctx context.Context) ([]*Skill, error)
 }
 
+// SkillInvocationFormatter opts an agent into native skill invocation syntax.
+// The returned prompt replaces full instruction expansion, including in history.
+type SkillInvocationFormatter interface {
+	FormatSkillInvocation(skill *Skill, args []string) string
+}
+
+// SkillInvocationSender lets a session carry the resolved skill alongside its
+// formatted prompt. Sessions whose native syntax needs only text can use Send.
+// onDelivered, when non-nil, must run only after the agent acknowledges the turn.
+type SkillInvocationSender interface {
+	SendSkill(prompt, messageID string, images []ImageAttachment, files []FileAttachment, skill *Skill, onDelivered func()) error
+}
+
 // SessionDeleter is an optional interface for agents that support deleting sessions.
 type SessionDeleter interface {
 	DeleteSession(ctx context.Context, sessionID string) error
@@ -621,6 +687,16 @@ type SessionTitleProvider interface {
 type WorkDirSwitcher interface {
 	SetWorkDir(dir string)
 	GetWorkDir() string
+}
+
+// SessionWorkDirProvider resolves a saved conversation's working directory
+// without starting its agent process or changing the project's default.
+// providerName is the conversation's saved provider; an empty name uses the
+// agent's current provider. Implementations must not change the active provider.
+// An empty directory means the project default applies. A lookup error must
+// be reported instead of running a command in a different directory.
+type SessionWorkDirProvider interface {
+	GetSessionWorkDir(ctx context.Context, sessionID, providerName string) (string, error)
 }
 
 // AgentOptsProvider is an optional interface for agents that need to carry

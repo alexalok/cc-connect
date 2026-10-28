@@ -53,6 +53,29 @@ Keep your token secure...
 
 ---
 
+## Message read indicators
+
+With `read_receipts = true` (the default), an **👀 reaction on your original
+message** means the agent confirmed receipt of that input. Codex supports this
+with `backend = "app_server"`, after a successful `turn/start` acknowledgment.
+Replies to its non-blocking questions are marked after `turn/steer` succeeds;
+answers collected across several questions are marked together when delivered.
+
+Messages waiting for startup, transcription, or a busy agent stay unmarked.
+Rejected messages and failed sends do not receive the indicator. Voice messages
+are marked on the original voice bubble after Codex accepts the transcription.
+The reaction confirms receipt, not successful completion of the requested work.
+Agents that cannot acknowledge input do not produce read indicators.
+
+Telegram bots use [message reactions](https://core.telegram.org/bots/api#setmessagereaction)
+for this indicator. Telegram's native read-marking API is limited to connected
+business accounts. The chat must allow the 👀 reaction; a Telegram API failure
+may prevent the indicator even when the agent received the message.
+
+Set `read_receipts = false` under `[projects.platforms.options]` to disable it.
+The older `enable_reactions = true` option adds ⚡ on arrival at the bridge and
+only applies when read receipts are disabled.
+
 ## Step 2: Configure cc-connect
 
 Add the token to your `config.toml`:
@@ -247,6 +270,104 @@ If multiple topics are created before their opening messages arrive, the
 missing IDs can be ambiguous. Those messages are not sent to an agent;
 cc-connect asks the sender to resend them inside the intended topic.
 
+### 6.4 New Codex Chats as Telegram Topics
+
+To automatically create a topic when you start a new Codex chat in the TUI
+or desktop app, set `topic_sync_chat_id` in the Telegram platform options.
+Use a user's ID for a DM or the group's ID for a supergroup. cc-connect
+queries Telegram to detect the destination type; no separate type setting
+is needed. Numeric strings and integers are accepted.
+
+For a **DM**, enable private topics in BotFather and start a DM with the bot:
+
+```toml
+[[projects.platforms]]
+type = "telegram"
+[projects.platforms.options]
+token = "YOUR_BOT_TOKEN"
+allow_from = "123456789"
+topic_sync_chat_id = "123456789" # Your private chat ID (also your user ID)
+topic_sync_interval_seconds = 10
+```
+
+For a **supergroup with Topics enabled**, add the bot as an administrator
+with **Manage Topics** permission and use the group's numeric ID (normally
+starting with `-100`):
+
+```toml
+[[projects.platforms]]
+type = "telegram"
+[projects.platforms.options]
+token = "YOUR_BOT_TOKEN"
+allow_from = "123456789" # Users allowed to control the agent, not the group ID
+topic_sync_chat_id = "-1001234567890"
+topic_sync_interval_seconds = 10
+group_reply_all = true # Optional: accept ordinary messages without @mention
+```
+
+Private topic mode in BotFather is not required for a supergroup. Before
+creating a topic, cc-connect verifies that Topics are enabled and the bot
+has the required administrator permission. Basic groups, channels, and
+supergroups without Topics are rejected.
+
+In the configured destination supergroup, each topic shares one conversation
+among users permitted by `allow_from`, regardless of `share_session_in_channel`.
+This includes messages, command buttons, and permission buttons, so another
+allowed user's reply continues the same synced conversation. Other chats
+keep their configured session-sharing behavior. Group members can see the
+mirrored conversation; `allow_from` controls who can interact with the agent.
+
+The destination is explicit: cc-connect never chooses one from incoming
+messages. Changing the ID selects a separate sync journal and a new initial
+cutoff; it does not move existing topics or copy previously linked chats.
+Switching back to a previous destination resumes its saved links and delivery
+progress. Existing DM configurations continue to work unchanged.
+
+This is opt-in and works with the Codex agent in a single-workspace project.
+Set `backend = "app_server"` under `[projects.agent.options]`; mirroring
+uses its persisted turn-origin metadata to avoid echoing bot replies.
+Set `list_all_sessions = true` under `[projects.agent.options]` to discover
+chats across working directories; otherwise discovery is limited to the
+configured `work_dir`. Clients must share the same `codex_home` / `CODEX_HOME`
+on the bot's host. Chats stored on another machine are not discovered.
+
+Only chats created after sync is first enabled are imported. The cutoff and
+topic links are stored beside the project's session file, so normal restarts
+retain existing links and catch up on chats created while the bot was offline.
+Old chats that you resume or rename are not imported. Archived chats,
+subagents, and chats already linked by cc-connect are excluded.
+
+Each topic uses the Codex chat title (or its first prompt when available).
+It receives the conversation's existing user messages and visible assistant
+messages, then keeps receiving new ones at the configured polling interval.
+Previously created empty sync topics catch up automatically after upgrading.
+Internal instructions, reasoning, and tool output are excluded. Attachments
+are represented by a note pointing to the original chat.
+Replies resume that same chat in its saved working directory. `/history`
+can read its native history before the first bot turn. Discovery does not
+start a Codex turn. Completed messages are mirrored; token-by-token streaming,
+message edits, and subsequent title or deletion changes are not
+mirrored. `/new` or `/switch` in a topic stops delivery from its original chat.
+Delivery progress is saved after each successful message chunk and survives
+restarts. A crash between Telegram accepting a chunk and saving that progress
+can replay the last chunk.
+
+Archiving a linked Codex chat in another client removes its corresponding
+Telegram topic, including the topic's messages, on the next poll. This also
+applies to topics originally created through Telegram in `topic_sync_chat_id`.
+The bridge checks Codex's persisted `archived_sessions` records, so it catches
+archives made while offline and does not treat missing files as archives.
+Codex's native archived history is preserved. Busy topics wait until their turn
+finishes; topics reused with `/new` or `/switch` are only removed if their
+currently selected conversation is archived. Failed Telegram deletions retry
+on later polls, including after restarts. Successful deletions are remembered;
+unarchiving a chat does not recreate its removed topic.
+The General topic of a supergroup is never removed by archive sync.
+
+Keep the session files and their `.topic-sync-*.json` companions together
+when backing up or moving the bot. A malformed sync file stops startup
+instead of silently resetting the cutoff and losing the saved links.
+
 ---
 
 ## Usage Example
@@ -333,3 +454,37 @@ Make sure Group Privacy mode is disabled. In BotFather: `/mybots` → select bot
 - [Slack Setup](./slack.md)
 - [Discord Setup](./discord.md)
 - [Back to README](../README.md)
+
+## Topic status icons
+
+Enable `topic_status_icons = true` in `[projects.platforms.options]` to show
+agent turn status in private-chat topics and forum topics. Icons update as the
+bridge processes turns; existing inactive topics are not retroactively labeled:
+
+| Icon | Meaning |
+| --- | --- |
+| ⚡ | Working |
+| ❓ | An answer is needed |
+| 👀 | Approval is needed |
+| ✅ | Turn finished |
+| ❗ | Failed or timed out |
+| 🏁 | Stopped |
+
+The bot needs topic-management rights in groups. Topics retain their names.
+An unanswered structured question keeps the question icon even if independent
+work finishes. Questions written only as ordinary prose cannot be detected
+reliably. Finished means a turn ended; it does not mean the response was read.
+
+Each icon can be customized with `topic_status_<status>_emoji`, where status is
+`working`, `question`, `approval`, `finished`, `failed`, or `stopped`. Choose an
+emoji in Telegram's `getForumTopicIconStickers` catalog. Updates are coalesced,
+serialized, and retried after rate limits without delaying chat messages.
+
+The Bot API cannot reorder topics. Telegram's MTProto API can reorder pinned
+topics through a logged-in user account, subject to Telegram's pin limit.
+
+When Codex conversation mirroring is enabled, imported topics also use local
+turn-start, completion, interruption and error events. Structured input requests
+are shown while awaiting the next user input. This does not resume the native
+chat or mark its messages as read. Native approval dialogs that are not persisted
+in the transcript remain visible in their originating client.

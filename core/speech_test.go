@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -9,6 +10,38 @@ import (
 	"strings"
 	"testing"
 )
+
+type originalAudioSTT struct {
+	audio      []byte
+	format     string
+	language   string
+	transcript string
+}
+
+func (*originalAudioSTT) SupportsAudioFormat(format string) bool { return format == "ogg" }
+func (s *originalAudioSTT) Transcribe(_ context.Context, audio []byte, format, lang string) (string, error) {
+	s.audio, s.format, s.language = audio, format, lang
+	return s.transcript, nil
+}
+
+func TestTranscribeAudio_PreservesProviderSupportedOriginalFormat(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // An intermediate conversion would fail here.
+	stt := &originalAudioSTT{transcript: "complete transcript"}
+	audio := &AudioAttachment{Data: []byte("original ogg data"), Format: "OGG"}
+	text, err := TranscribeAudio(context.Background(), stt, audio, "ru")
+	if err != nil || text != stt.transcript {
+		t.Fatalf("TranscribeAudio = %q, %v", text, err)
+	}
+	if !bytes.Equal(stt.audio, audio.Data) || stt.format != "ogg" || stt.language != "ru" {
+		t.Fatalf("provider did not receive original audio: %+v", stt)
+	}
+	if _, err := TranscribeAudio(context.Background(), stt, &AudioAttachment{Data: audio.Data, Format: "amr"}, ""); err == nil {
+		t.Fatal("legacy conversion must remain enabled for a format the provider does not accept")
+	}
+	if _, err := TranscribeAudio(context.Background(), NewOpenAIWhisper("key", "", ""), &AudioAttachment{Data: audio.Data, Format: "ogg"}, ""); err == nil {
+		t.Fatal("providers without format support must retain legacy conversion")
+	}
+}
 
 func TestNewGeminiSTT_DefaultModel(t *testing.T) {
 	g := NewGeminiSTT("test-key", "")

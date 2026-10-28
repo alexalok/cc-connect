@@ -45,6 +45,8 @@ import (
 // working, then check status. Both messages have receipts before either answer;
 // draining the queue must preserve each receipt without adding another one.
 func TestCUJ_A8_ImmediateReceiptsDuringStartupAndQueue(t *testing.T) {
+	t.Run("agent_confirmed", testAgentConfirmedReceipts)
+
 	env := newReceiptAckEnv(t, nil)
 
 	// User action 1: submit the first task while agent startup is blocked.
@@ -207,6 +209,7 @@ func (a *cujAgent) Stop() error { return nil }
 // The process boundary reports its selected ID and cwd in the visible reply.
 type cujDirectoryAgent struct {
 	stubAgent
+	mu             sync.Mutex
 	defaultWorkDir string
 	sessions       []AgentSessionInfo
 	workDirs       map[string]string
@@ -217,7 +220,7 @@ func (a *cujDirectoryAgent) ListSessions(context.Context) ([]AgentSessionInfo, e
 }
 
 func (a *cujDirectoryAgent) StartSession(_ context.Context, id string) (AgentSession, error) {
-	workDir := a.defaultWorkDir
+	workDir := a.GetWorkDir()
 	if id == "" {
 		id = "fresh-session"
 	} else {
@@ -232,7 +235,24 @@ func (a *cujDirectoryAgent) StartSession(_ context.Context, id string) (AgentSes
 	return &cujDirectorySession{cujAgentSession: s, id: id, workDir: workDir}, nil
 }
 
-func (a *cujDirectoryAgent) GetWorkDir() string { return a.defaultWorkDir }
+func (a *cujDirectoryAgent) GetWorkDir() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.defaultWorkDir
+}
+
+func (a *cujDirectoryAgent) SetWorkDir(dir string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.defaultWorkDir = dir
+}
+
+func (a *cujDirectoryAgent) GetSessionWorkDir(_ context.Context, id, _ string) (string, error) {
+	if dir, ok := a.workDirs[id]; ok {
+		return dir, nil
+	}
+	return "", fmt.Errorf("unknown native session %q", id)
+}
 
 type cujDirectorySession struct {
 	*cujAgentSession
@@ -347,6 +367,187 @@ func runArchiveJourney(t *testing.T, retryTopicDeletion bool) {
 	visible(e.i18n.T(MsgListEmpty))
 	send("test:topic-2", "start another conversation")
 	visible("Fresh conversation thread-2")
+}
+
+type cujTopicDiscoveryAgent struct {
+	cujDirectoryAgent
+}
+
+func (a *cujTopicDiscoveryAgent) DiscoverSessions(context.Context, time.Time) ([]AgentSessionInfo, error) {
+	return append([]AgentSessionInfo(nil), a.sessions...), nil
+}
+
+func (a *cujTopicDiscoveryAgent) GetSessionHistory(context.Context, string, int) ([]HistoryEntry, error) {
+	return []HistoryEntry{{Role: "user", Content: "Original desktop question", Timestamp: time.Now()}}, nil
+}
+
+func (a *cujTopicDiscoveryAgent) DeleteSession(_ context.Context, id string) error {
+	delete(a.workDirs, id)
+	for i, info := range a.sessions {
+		if info.ID == id {
+			a.sessions = append(a.sessions[:i], a.sessions[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
+func TestCUJ_B13_ExternalChatBecomesResumableTopic(t *testing.T) {
+	t.Run("ExternalArchiveRemovesTopic", testCUJExternalTopicArchive)
+	t.Run("ConversationMirrorsAcrossClientsAndRestart", testCUJExternalConversationMirroring)
+	t.Run("SupergroupConversationMirrorsAcrossUsersAndRestart", func(t *testing.T) {
+		testCUJConversationMirroring(t, "-100123", "test:-100123:", []string{"123", "456"})
+	})
+	t.Run("ImmediateReplyWaitsForBinding", testCUJExternalTopicImmediateReply)
+	t.Run("DeletedChatStaysDeletedAfterRestart", testCUJExternalTopicDeletion)
+	a := &cujTopicDiscoveryAgent{cujDirectoryAgent: cujDirectoryAgent{
+		defaultWorkDir: "/default", workDirs: map[string]string{"desktop-chat": "/desktop/project"},
+	}}
+	p := &topicSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, target: "owner"}
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	e, worker := newTopicSyncTest(t, a, p, path)
+	// User creates a chat in another client. The external boundary exposes it
+	// on the next discovery tick, and the user sees its new topic title.
+	a.sessions = []AgentSessionInfo{{ID: "desktop-chat", Summary: "Desktop project"}}
+	if err := worker.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if sent := strings.Join(p.getSent(), "\n"); !strings.Contains(sent, "topic: Desktop project") {
+		t.Fatalf("new topic was not visible: %s", sent)
+	}
+	key := p.keys[0]
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	send := func(engine *Engine, content string) {
+		p.clearSent()
+		engine.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", UserID: "owner", Content: content, ReplyCtx: key})
+	}
+	// User action 1: inspect the linked conversation.
+	send(e, "/current")
+	if !env.sentContains("desktop-chat") {
+		t.Fatalf("wrong chat: %v", p.getSent())
+	}
+	// User action 2: inspect native history before sending a bot message.
+	send(e, "/history")
+	if !env.sentContains("Original desktop question") {
+		t.Fatalf("native history missing: %v", p.getSent())
+	}
+	// User action 3: continue in the topic, using the native ID and directory.
+	send(e, "continue this work")
+	env.waitFor("native chat continuation", 3*time.Second, func() bool {
+		return env.sentContains("session=desktop-chat cwd=/desktop/project")
+	})
+	if err := e.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	e2, worker2 := newTopicSyncTest(t, a, p, path)
+	if err := worker2.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.keys) != 1 {
+		t.Fatalf("restart duplicated the topic: %v", p.keys)
+	}
+	// User action 4: after a restart, the topic still selects the same chat.
+	send(e2, "/current")
+	if !env.sentContains("desktop-chat") {
+		t.Fatalf("restart lost the link: %v", p.getSent())
+	}
+}
+
+func testCUJExternalTopicImmediateReply(t *testing.T) {
+	a := &cujTopicDiscoveryAgent{cujDirectoryAgent: cujDirectoryAgent{
+		defaultWorkDir: "/default", workDirs: map[string]string{"native": "/native/project"},
+		sessions: []AgentSessionInfo{{ID: "native", Summary: "Native chat"}},
+	}}
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCreation := func() { releaseOnce.Do(func() { close(release) }) }
+	p := &topicSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, target: "owner", created: make(chan string, 1), release: release}
+	e, worker := newTopicSyncTest(t, a, p, filepath.Join(t.TempDir(), "sessions.json"))
+	polled := make(chan error, 1)
+	go func() { polled <- worker.poll(e.ctx) }()
+	t.Cleanup(func() { releaseCreation(); <-polled })
+	key := <-p.created // Telegram has exposed the topic before returning its API result.
+	var received sync.WaitGroup
+	send := func(content string) {
+		e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", UserID: "owner", Content: content, ReplyCtx: key})
+	}
+	// Action 1: immediately ask for the chat selected by the new topic.
+	initialReply := make(chan struct{})
+	received.Add(1)
+	go func() { defer received.Done(); send("/current"); close(initialReply) }()
+	t.Cleanup(func() { releaseCreation(); received.Wait() })
+	select {
+	case <-initialReply:
+		t.Fatal("incoming reply was processed before the topic could be bound")
+	case <-time.After(50 * time.Millisecond):
+	}
+	releaseCreation()
+	select {
+	case <-initialReply:
+	case <-time.After(3 * time.Second):
+		t.Fatal("incoming reply stayed blocked")
+	}
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	if !env.sentContains("native") {
+		t.Fatalf("wrong chat selected: %v", p.getSent())
+	}
+	// Actions 2 and 3: read the native history, then continue that conversation.
+	p.clearSent()
+	send("/history")
+	if !env.sentContains("Original desktop question") {
+		t.Fatalf("native history missing: %v", p.getSent())
+	}
+	p.clearSent()
+	send("continue this work")
+	env.waitFor("native continuation after immediate reply", 3*time.Second, func() bool {
+		return env.sentContains("session=native cwd=/native/project")
+	})
+}
+
+func testCUJExternalTopicDeletion(t *testing.T) {
+	a := &cujTopicDiscoveryAgent{cujDirectoryAgent: cujDirectoryAgent{
+		defaultWorkDir: "/default", workDirs: map[string]string{"native": "/native/project"},
+		sessions: []AgentSessionInfo{{ID: "native", Summary: "Native chat"}},
+	}}
+	p := &topicSyncPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, target: "owner"}
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	e, worker := newTopicSyncTest(t, a, p, path)
+	if err := worker.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	key := p.keys[0]
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	send := func(engine *Engine, target, content string) {
+		p.clearSent()
+		engine.ReceiveMessage(p, &Message{SessionKey: target, Platform: "test", UserID: "owner", Content: content, ReplyCtx: target})
+	}
+	// Action 1: inspect the imported topic's conversation.
+	send(e, key, "/current")
+	if !env.sentContains("native") {
+		t.Fatalf("native conversation missing: %v", p.getSent())
+	}
+	// Action 2: delete that conversation from another topic.
+	send(e, "test:owner:other", "/delete native")
+	if !env.sentContains(e.i18n.Tf(MsgDeleteSuccess, "Native chat")) {
+		t.Fatalf("delete did not succeed: %v", p.getSent())
+	}
+	if err := e.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	e2, worker2 := newTopicSyncTest(t, a, p, path)
+	if err := worker2.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Action 3: after restarting, the topic must not select the deleted ID.
+	send(e2, key, "/current")
+	if env.sentContains("native") || !env.sentContains(e2.i18n.T(MsgSessionNotStarted)) {
+		t.Fatalf("restart resurrected deleted conversation: %v", p.getSent())
+	}
+	// Action 4: a new message can start a conversation instead of failing to resume.
+	send(e2, key, "start new work")
+	env.waitFor("fresh conversation after deletion", 3*time.Second, func() bool {
+		return env.sentContains("session=fresh-session cwd=/default")
+	})
 }
 
 // cujAgentSession is an AgentSession whose reply is controllable per-Send.
@@ -1582,6 +1783,47 @@ func TestCUJ_A3_ImageReachesAgent(t *testing.T) {
 // "voice not enabled" message (the actual STT branch is covered by
 // platform-specific tests).
 func TestCUJ_A4_VoiceMessageWithoutSTTSurfacesClearMessage(t *testing.T) {
+	t.Run("ConfiguredProviderKeepsVoiceAndTextInHistory", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		env := newCUJEnv(t)
+		t.Cleanup(func() { env.engine.Stop() })
+		const transcript = "remember the spoken number forty two"
+		env.engine.SetSpeechConfig(SpeechCfg{Enabled: true, STT: &originalAudioSTT{transcript: transcript}})
+
+		// Action 1: send voice in a format the provider decodes itself.
+		env.engine.ReceiveMessage(env.plat, &Message{
+			SessionKey: "test:voice", Platform: "test", UserID: "voice", MessageID: "voice-1", ReplyCtx: "ctx-voice",
+			Audio: &AudioAttachment{Format: "ogg", Data: []byte("voice recording")},
+		})
+		env.waitFor("voice transcript and agent reply", 3*time.Second, func() bool {
+			return env.sentContains(transcript) && env.sentContains("ok")
+		})
+
+		// Action 2: continue the same conversation with typed text.
+		env.userSends("voice", "remember the typed number seven")
+		env.waitFor("second reply", 3*time.Second, func() bool {
+			n := 0
+			for _, text := range env.plat.getSent() {
+				if text == "ok" {
+					n++
+				}
+			}
+			return n >= 2
+		})
+
+		// Action 3: inspect history; both user inputs must be visible.
+		before := len(env.plat.getSent())
+		env.userSends("voice", "/history")
+		env.waitFor("voice and text in history", 3*time.Second, func() bool {
+			for _, text := range env.plat.getSent()[before:] {
+				if strings.Contains(text, transcript) && strings.Contains(text, "remember the typed number seven") {
+					return true
+				}
+			}
+			return false
+		})
+	})
+
 	plat := &stubPlatformEngine{n: "test"}
 	agent := &cujAgent{}
 	dir := t.TempDir()
@@ -1753,6 +1995,62 @@ func TestCUJ_B2_ListShowsAllSessions(t *testing.T) {
 		if env.sentContains(external.ID) || env.sentContains(externalDir) {
 			t.Fatalf("new chat reused the external session: %v", p.getSent())
 		}
+	})
+
+	t.Run("external_directory_bridge_commands", func(t *testing.T) {
+		defaultDir := commandWorkDirRepo(t, "DEFAULT_REPOSITORY_CHANGE")
+		externalDir := commandWorkDirRepo(t, "EXTERNAL_REPOSITORY_CHANGE")
+		external := AgentSessionInfo{ID: "external-session", Summary: "Other directory chat"}
+		agent := &cujDirectoryAgent{
+			defaultWorkDir: defaultDir,
+			sessions:       []AgentSessionInfo{external},
+			workDirs:       map[string]string{external.ID: externalDir},
+		}
+		p := &stubPlatformEngine{n: "test"}
+		store := filepath.Join(t.TempDir(), "sessions.json")
+		e := NewEngine("test", agent, []Platform{p}, store, LangEnglish)
+		e.SetAdminFrom("*")
+		t.Cleanup(func() { _ = e.Stop() })
+		env := &cujEnv{t: t, engine: e, plat: p}
+		check := func(user, command, want, unwanted string) {
+			t.Helper()
+			p.clearSent()
+			env.userSends(user, command)
+			env.waitFor(command+" reply", 3*time.Second, func() bool { return env.sentContains(want) })
+			if !env.sentContains(want) || (unwanted != "" && env.sentContains(unwanted)) {
+				t.Fatalf("%s: wanted %q, excluding %q; visible replies: %v", command, want, unwanted, p.getSent())
+			}
+		}
+		check("b2-cwd", "/switch "+external.ID, external.Summary, "")
+		// Local commands must use the chosen conversation before Codex starts.
+		check("b2-cwd", "/dir", externalDir, defaultDir)
+		check("b2-cwd", "/shell pwd", externalDir, defaultDir)
+		check("b2-cwd", "/diff", "EXTERNAL_REPOSITORY_CHANGE", "DEFAULT_REPOSITORY_CHANGE")
+		check("b2-cwd", "/show changes.txt", "EXTERNAL_REPOSITORY_CHANGE", "DEFAULT_REPOSITORY_CHANGE")
+		check("b2-cwd", "/status", externalDir, defaultDir)
+
+		p.clearSent()
+		key := env.userSends("b2-cwd", "continue this conversation")
+		env.waitFor("external agent response", 3*time.Second, func() bool {
+			return env.sentContains("session="+external.ID+" cwd="+externalDir) && !env.activeSession(key).Busy()
+		})
+		check("b2-cwd", "/shell pwd", externalDir, defaultDir)
+		check("b2-other-topic", "/shell pwd", defaultDir, externalDir)
+
+		// Recreate the bridge with the persisted topic-to-session binding.
+		if err := e.Stop(); err != nil {
+			t.Fatal(err)
+		}
+		e = NewEngine("test", agent, []Platform{p}, store, LangEnglish)
+		e.SetAdminFrom("*")
+		env.engine = e
+		check("b2-cwd", "/dir", externalDir, defaultDir)
+		check("b2-cwd", "/shell pwd", externalDir, defaultDir)
+		check("b2-cwd", "/diff", "EXTERNAL_REPOSITORY_CHANGE", "DEFAULT_REPOSITORY_CHANGE")
+		check("b2-cwd", "/new", e.i18n.T(MsgNewSessionCreated), "")
+		check("b2-cwd", "/dir", defaultDir, externalDir)
+		check("b2-cwd", "/shell pwd", defaultDir, externalDir)
+		check("b2-cwd", "/diff", "DEFAULT_REPOSITORY_CHANGE", "EXTERNAL_REPOSITORY_CHANGE")
 	})
 }
 
@@ -2987,6 +3285,39 @@ func TestCUJ_H4_FeishuTopicsKeepWorkspaceBindingsIsolated(t *testing.T) {
 
 // Lists and invocation must agree across groups, including after rebinding.
 func TestCUJ_H5_WorkspaceSkillDiscoveryAndInvocation(t *testing.T) {
+	t.Run("NativeInvocationKeepsHistoryCompact", func(t *testing.T) {
+		p := &stubPlatformEngine{n: "telegram"}
+		e, a := newNativeSkillEngine(t, p)
+		key := skillMessage(p.Name(), "a", "").SessionKey
+		env := &cujEnv{t: t, engine: e, plat: p}
+		send := func(content string) { e.ReceiveMessage(p, skillMessage(p.Name(), "a", content)) }
+		waitForReply := func(want string) {
+			t.Helper()
+			env.waitFor(want, 3*time.Second, func() bool {
+				return strings.Contains(strings.Join(p.getSent(), "\n"), want) && !e.sessions.GetOrCreateActive(key).Busy()
+			})
+		}
+
+		send("/skills")
+		if got := strings.Join(p.getSent(), "\n"); !strings.Contains(got, "/review_code") {
+			t.Fatalf("skill missing from Telegram list: %s", got)
+		}
+		send("/review_code reviewer")
+		waitForReply("native: invoke:review-code reviewer from " + a.skill.Source)
+		send("ordinary follow-up")
+		waitForReply("plain: ordinary follow-up")
+		p.clearSent()
+		send("/history")
+		visible := strings.Join(p.getSent(), "\n")
+		for _, want := range []string{"invoke:review-code reviewer", "ordinary follow-up"} {
+			if !strings.Contains(visible, want) {
+				t.Errorf("history %q missing %q", visible, want)
+			}
+		}
+		if strings.Contains(visible, a.skill.Prompt) || strings.Contains(visible, "Skill Instructions:") {
+			t.Fatalf("full skill instructions leaked into history: %s", visible)
+		}
+	})
 	t.Run("EnabledCatalogExcludesUnselectedSkills", func(t *testing.T) {
 		p := &stubPlatformEngine{n: "feishu"}
 		e, a := newCatalogSkillsEngine(t, p)
@@ -3043,4 +3374,31 @@ func TestCUJ_H5_WorkspaceSkillDiscoveryAndInvocation(t *testing.T) {
 	e.ReceiveMessage(p, skillMessage(p.Name(), "a", "/skills"))
 	sent := p.getSent()
 	assertWorkspaceSkills(t, sent[len(sent)-1], "b", "a")
+}
+
+// Start work, answer a question after the turn has finished, then stop a new
+// turn. The visible question must survive completion until the user answers.
+func TestCUJ_I6_TopicStatusQuestionSurvivesCompletion(t *testing.T) {
+	e, p, s, send := newStatusEngine(t)
+	send("start task")
+	waitConversationStatus(t, p, ConversationWorking)
+	s.events <- Event{Type: EventUserInputRequest, RequestID: "q", Questions: testQuestions()}
+	waitConversationStatus(t, p, ConversationQuestion)
+	s.events <- Event{Type: EventResult, Content: "Independent work finished", Done: true}
+	waitAsyncInput(t, func() bool { return !e.sessions.GetOrCreateActive("status:user").Busy() })
+	if p.lastStatus() != ConversationQuestion {
+		t.Fatalf("pending question hidden by completion: %s", p.lastStatus())
+	}
+	s.mu.Lock()
+	s.active = false
+	s.mu.Unlock()
+	send("2")
+	waitConversationStatus(t, p, ConversationWorking)
+	s.events <- Event{Type: EventResult, Content: "All finished", Done: true}
+	waitConversationStatus(t, p, ConversationFinished)
+	waitAsyncInput(t, func() bool { return !e.sessions.GetOrCreateActive("status:user").Busy() })
+	send("another task")
+	waitConversationStatus(t, p, ConversationWorking)
+	send("/stop")
+	waitConversationStatus(t, p, ConversationStopped)
 }

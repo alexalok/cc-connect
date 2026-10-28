@@ -58,8 +58,17 @@ the next page, and `/switch <number | id_prefix | name>` selects a conversation.
 On the next message, both Codex backends resume in that session's saved working
 directory, including staging incoming attachments there. Other topics and new
 sessions keep their own working directories; no `/dir` change is needed.
-Project commands such as `/dir`, `/shell`, and `/diff` continue to use the
-project's default directory, rather than the selected Codex session's directory.
+`/shell`, `/diff`, and relative `/show` references use the selected conversation's
+directory, and `/dir` and `/status` display it. This works immediately after
+`/switch` and after a bridge restart, without starting Codex first. A live
+session's directory takes precedence over its saved directory. Selecting a
+conversation does not change another topic's directory or the default for `/new`.
+Saved-directory lookups honor the conversation's persisted provider choice
+without changing the agent's active provider.
+If the selected directory is unavailable, these commands report an error instead
+of using the project default. Explicit `/dir <path>` and `/dir reset` retain their
+existing directory-switching behavior; relative paths start from the selected
+conversation's directory.
 A missing saved directory reports a resume error. Set `resume_fallback_to_new = false`
 at the project level to keep that binding for a later retry instead of starting fresh.
 Archived sessions and helper subagents remain excluded, and `filter_external_sessions`
@@ -139,6 +148,16 @@ All agents support permission modes switchable at runtime via `/mode`.
 | Auto Edit | `auto-edit` | Model decides when to ask |
 | Full Auto | `full-auto` | Auto-approve with sandbox |
 | YOLO | `yolo` | Bypass all approvals and sandbox |
+
+### Codex skill commands
+
+Skill slash commands invoke Codex skills natively. For example, `/pr_loop codex`
+sends `$pr-loop codex` and lets Codex load the selected skill. The `app_server`
+backend also includes the skill's name and file path as an explicit skill input,
+as in the Codex TUI. The `exec` backend uses the `$skill-name` text syntax.
+The full skill instructions are no longer pasted into the user message or
+CC-Connect's `/history`. Other agents retain instruction expansion unless they
+provide their own native invocation support.
 
 ### Codex CLI discovery on macOS
 
@@ -341,7 +360,10 @@ Switch where the next agent session starts, directly from chat.
 - If you are the only user of this bot, `admin_from = "*"` also works, but it grants every allowed user privileged command access.
 - Restart `cc-connect` after updating `config.toml`.
 - Directory changes apply to the next session in the current project.
-- Relative paths are resolved from the current agent work directory.
+- Relative paths are resolved from the selected conversation's effective directory,
+  falling back to the configured agent directory when there is no session override.
+- Viewing `/dir` does not change the project default. Explicit directory changes
+  keep their project-wide effect outside multi-workspace mode.
 - Directory history is project-scoped and can be switched by index.
 - `/cd` is kept for compatibility, but `/dir` is the primary command.
 
@@ -729,7 +751,7 @@ Send voice messages — cc-connect transcribes them automatically.
 
 **Supported:** Feishu, WeChat Work, Telegram, LINE, Discord, Slack
 
-**Requirements:** OpenAI/Groq API key, `ffmpeg`
+**Requirements:** A speech provider credential and `ffmpeg`.
 
 ### Configure
 
@@ -748,6 +770,35 @@ api_key = "sk-xxx"
 # api_key = "gsk_xxx"
 # model = "whisper-large-v3-turbo"
 ```
+
+### Realtime transcription with a ChatGPT-backed gateway
+
+The `openai-realtime` provider can use an existing authenticated gateway such as
+OpenCodex that relays Realtime transcription using your ChatGPT/Codex account.
+Configure the gateway's credential and address; CC-Connect does not extract or
+refresh your ChatGPT login tokens.
+
+```toml
+[speech]
+enabled = true
+provider = "openai-realtime"
+language = "" # auto-detect, or a language code such as "en" or "ru"
+
+[speech.openai]
+api_key = "your-gateway-key"
+base_url = "http://127.0.0.1:10101/v1"
+model = "gpt-transcribe" # default for openai-realtime
+```
+
+The gateway must support `/v1/realtime?intent=transcription` WebSockets. A
+Responses-only proxy is insufficient. Subscription access depends on the
+gateway and account; omitting `base_url` uses the separately billed OpenAI API.
+Use HTTPS/WSS for remote gateways; HTTP/WS is accepted only on loopback.
+
+`ffmpeg` decodes each recording to 24 kHz mono PCM. The provider commits the
+whole recording once and waits for its final transcript, preserving pauses and
+the last sentence. Recordings are limited to ten minutes. This enables incoming
+voice messages; voice replies still use the separate `[tts]` configuration.
 
 ### Install ffmpeg
 

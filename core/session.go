@@ -416,28 +416,30 @@ const snapshotVersion = 1
 
 // sessionSnapshot is the JSON-serializable state of the SessionManager.
 type sessionSnapshot struct {
-	Sessions       map[string]*Session  `json:"sessions"`
-	ActiveSession  map[string]string    `json:"active_session"`
-	UserSessions   map[string][]string  `json:"user_sessions"`
-	Counter        int64                `json:"counter"`
-	SessionNames   map[string]string    `json:"session_names,omitempty"`    // agent session ID → custom name
-	UserMeta       map[string]*UserMeta `json:"user_meta,omitempty"`        // sessionKey → display info
-	PastIDTracking bool                 `json:"past_id_tracking,omitempty"` // true once PastAgentSessionIDs is supported
-	LegacyData     bool                 `json:"legacy_data,omitempty"`      // true while pre-fix sessions exist
-	Version        int                  `json:"version,omitempty"`          // schema version for migration detection
+	Sessions               map[string]*Session  `json:"sessions"`
+	ActiveSession          map[string]string    `json:"active_session"`
+	UserSessions           map[string][]string  `json:"user_sessions"`
+	Counter                int64                `json:"counter"`
+	SessionNames           map[string]string    `json:"session_names,omitempty"`    // agent session ID → custom name
+	UserMeta               map[string]*UserMeta `json:"user_meta,omitempty"`        // sessionKey → display info
+	PastIDTracking         bool                 `json:"past_id_tracking,omitempty"` // true once PastAgentSessionIDs is supported
+	LegacyData             bool                 `json:"legacy_data,omitempty"`      // true while pre-fix sessions exist
+	Version                int                  `json:"version,omitempty"`          // schema version for migration detection
+	DeletedAgentSessionIDs map[string]bool      `json:"deleted_agent_session_ids,omitempty"`
 }
 
 // SessionManager supports multiple named sessions per user with active-session tracking.
 // It can persist state to a JSON file and reload on startup.
 type SessionManager struct {
-	mu            sync.RWMutex
-	sessions      map[string]*Session
-	activeSession map[string]string
-	userSessions  map[string][]string
-	sessionNames  map[string]string    // agent session ID → custom name
-	userMeta      map[string]*UserMeta // sessionKey → display info
-	counter       int64
-	storePath     string // empty = no persistence
+	mu                     sync.RWMutex
+	sessions               map[string]*Session
+	activeSession          map[string]string
+	userSessions           map[string][]string
+	sessionNames           map[string]string    // agent session ID → custom name
+	userMeta               map[string]*UserMeta // sessionKey → display info
+	counter                int64
+	storePath              string          // empty = no persistence
+	deletedAgentSessionIDs map[string]bool // tombstones prevent topic-sync recovery from undoing deletion
 
 	// legacyData is true when sessions were loaded from a snapshot that
 	// predates PastAgentSessionIDs tracking. In this state, many sessions
@@ -769,9 +771,11 @@ func (sm *SessionManager) FindByID(id string) *Session {
 func (sm *SessionManager) DeleteByID(id string) bool {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	if _, ok := sm.sessions[id]; !ok {
+	s, ok := sm.sessions[id]
+	if !ok {
 		return false
 	}
+	sm.markAgentSessionDeletedLocked(s.GetAgentSessionID())
 	sm.deleteByIDLocked(id)
 	sm.saveLocked()
 	return true
@@ -787,6 +791,7 @@ func (sm *SessionManager) DeleteByAgentSessionID(agentSessionID string) int {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	sm.markAgentSessionDeletedLocked(agentSessionID)
 	removed := 0
 	for id, s := range sm.sessions {
 		s.mu.Lock()
@@ -798,10 +803,25 @@ func (sm *SessionManager) DeleteByAgentSessionID(agentSessionID string) int {
 		sm.deleteByIDLocked(id)
 		removed++
 	}
-	if removed > 0 {
-		sm.saveLocked()
-	}
+	// Persist the tombstone even if the local row was already removed.
+	sm.saveLocked()
 	return removed
+}
+
+func (sm *SessionManager) markAgentSessionDeletedLocked(id string) {
+	if id == "" || id == ContinueSession {
+		return
+	}
+	if sm.deletedAgentSessionIDs == nil {
+		sm.deletedAgentSessionIDs = make(map[string]bool)
+	}
+	sm.deletedAgentSessionIDs[id] = true
+}
+
+func (sm *SessionManager) agentSessionDeleted(id string) bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.deletedAgentSessionIDs[id]
 }
 
 func (sm *SessionManager) deleteByIDLocked(id string) {
@@ -845,6 +865,7 @@ func (sm *SessionManager) saveLocked() {
 			Name:                s.Name,
 			AgentSessionID:      agentSID,
 			AgentType:           s.AgentType,
+			ActiveProvider:      s.ActiveProvider,
 			PastAgentSessionIDs: append([]string(nil), s.PastAgentSessionIDs...),
 			Archived:            s.Archived,
 			History:             append([]HistoryEntry(nil), s.History...),
@@ -875,15 +896,16 @@ func (sm *SessionManager) saveLocked() {
 	}
 
 	snap := sessionSnapshot{
-		Sessions:       snapSessions,
-		ActiveSession:  sm.activeSession,
-		UserSessions:   sm.userSessions,
-		Counter:        sm.counter,
-		SessionNames:   sm.sessionNames,
-		UserMeta:       sm.userMeta,
-		PastIDTracking: true,
-		LegacyData:     sm.legacyData,
-		Version:        snapshotVersion,
+		Sessions:               snapSessions,
+		ActiveSession:          sm.activeSession,
+		UserSessions:           sm.userSessions,
+		Counter:                sm.counter,
+		SessionNames:           sm.sessionNames,
+		UserMeta:               sm.userMeta,
+		PastIDTracking:         true,
+		LegacyData:             sm.legacyData,
+		Version:                snapshotVersion,
+		DeletedAgentSessionIDs: sm.deletedAgentSessionIDs,
 	}
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
@@ -918,6 +940,7 @@ func (sm *SessionManager) load() {
 	sm.sessionNames = snap.SessionNames
 	sm.userMeta = snap.UserMeta
 	sm.counter = snap.Counter
+	sm.deletedAgentSessionIDs = snap.DeletedAgentSessionIDs
 	if snap.Version >= snapshotVersion {
 		sm.legacyData = snap.LegacyData
 	} else {

@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type pendingUserInput struct {
 	id         string
 	questions  []UserQuestion
 	answers    []string
+	receipts   []func()
 	current    int
 	responding bool
 }
@@ -23,10 +25,12 @@ func (e *Engine) showAsyncUserInput(state *interactiveState, p Platform, replyCt
 		id:        base64.RawURLEncoding.EncodeToString([]byte(event.RequestID)),
 		questions: event.Questions,
 		answers:   make([]string, len(event.Questions)),
+		receipts:  make([]func(), len(event.Questions)),
 	}
 	state.mu.Lock()
 	state.pendingUserInput = pending
 	state.mu.Unlock()
+	e.updateConversationStatus(state, "")
 	e.sendAskQuestionPrompt(p, replyCtx, pending.questions, 0, pending.id)
 }
 
@@ -64,6 +68,7 @@ func (e *Engine) handleAsyncUserInput(p Platform, msg *Message, content, key str
 	}
 	answer := e.resolveAskQuestionAnswer(question, content)
 	pending.answers[index] = answer
+	pending.receipts[index] = msg.OnDelivered
 	if index+1 < len(pending.questions) {
 		pending.current++
 		next := pending.current
@@ -79,6 +84,14 @@ func (e *Engine) handleAsyncUserInput(p Platform, msg *Message, content, key str
 		lines = append(lines, q.Question+": "+pending.answers[i])
 	}
 	prompt := strings.Join(lines, "\n")
+	receipts := append([]func(){}, pending.receipts...)
+	onDelivered := sync.OnceFunc(func() {
+		for _, receipt := range receipts {
+			if receipt != nil {
+				receipt()
+			}
+		}
+	})
 	state.mu.Unlock()
 
 	steered := false
@@ -98,13 +111,16 @@ func (e *Engine) handleAsyncUserInput(p Platform, msg *Message, content, key str
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
 		return content, true
 	}
+	e.updateConversationStatus(state, "")
 	e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", question.Question, answer))
 	if steered {
+		onDelivered()
 		session.AddHistory("user", prompt)
 		sessions.Save()
 		return prompt, true
 	}
 	// A completed turn uses the ordinary message path, including its busy lock,
 	// queue, history persistence and foreground event-reader ownership.
+	msg.OnDelivered = onDelivered
 	return prompt, false
 }
