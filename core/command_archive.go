@@ -10,7 +10,7 @@ func (e *Engine) cmdArchive(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgArchiveUsage))
 		return
 	}
-	agent, sessions, interactiveKey, err := e.commandContext(p, msg)
+	agent, sessions, interactiveKey, err := e.archiveCommandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
@@ -41,7 +41,16 @@ func (e *Engine) cmdArchive(p Platform, msg *Message, args []string) {
 			return
 		}
 		session.ForceUnlock()
-		if err := archiver.ArchiveSession(e.ctx, session.GetAgentSessionID()); err != nil {
+		var archiveErr error
+		if scoped, ok := agent.(ProviderSessionArchiver); ok {
+			session.mu.Lock()
+			provider := session.ActiveProvider
+			session.mu.Unlock()
+			archiveErr = scoped.ArchiveSessionWithProvider(e.ctx, session.GetAgentSessionID(), provider)
+		} else {
+			archiveErr = archiver.ArchiveSession(e.ctx, session.GetAgentSessionID())
+		}
+		if err := archiveErr; err != nil {
 			slog.Warn("archive: agent session archive failed", "error", err)
 			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgArchiveFailed, err))
 			return
@@ -61,4 +70,14 @@ func (e *Engine) cmdArchive(p Platform, msg *Message, args []string) {
 		}
 	}
 	e.reply(p, msg.ReplyCtx, e.i18n.T(MsgArchiveSuccess))
+}
+
+// Send-bound conversations override channel/global context just as they do for
+// incoming turns. Resolve before stopping or archiving any selected session.
+func (e *Engine) archiveCommandContext(p Platform, msg *Message) (Agent, *SessionManager, string, error) {
+	if workDir := e.sendWorkDirForSession(msg.SessionKey); workDir != "" {
+		agent, sessions, err := e.getOrCreateWorkspaceAgent(workDir)
+		return agent, sessions, workDir + ":" + msg.SessionKey, err
+	}
+	return e.commandContext(p, msg)
 }

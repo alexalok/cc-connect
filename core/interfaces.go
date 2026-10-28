@@ -670,6 +670,12 @@ type SessionArchiver interface {
 	ArchiveSession(ctx context.Context, sessionID string) error
 }
 
+// ProviderSessionArchiver selects a saved provider without changing the agent's
+// default for other conversations. Empty provider uses the current default.
+type ProviderSessionArchiver interface {
+	ArchiveSessionWithProvider(ctx context.Context, sessionID, providerName string) error
+}
+
 // TopicDeleter removes the topic containing a reply after its session is archived.
 // It returns false without error when the reply is not in a deletable topic.
 // Implementations must never delete the enclosing chat or channel.

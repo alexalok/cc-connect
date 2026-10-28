@@ -377,3 +377,68 @@ func TestCmdArchive_WaitsForPreviouslyRequestedStop(t *testing.T) {
 		t.Fatal("archive did not finish after process shutdown")
 	}
 }
+
+func TestCmdArchive_UsesSendBoundWorkspaceSession(t *testing.T) {
+	const key = "test:topic"
+	workspace := t.TempDir()
+	running := newCUJAgentSession()
+	global := &archiveCommandAgent{Agent: &stubAgent{}, archive: func(string) error {
+		t.Fatal("must not archive the global conversation")
+		return nil
+	}}
+	var archived string
+	bound := &archiveCommandAgent{Agent: &stubAgent{}, archive: func(id string) error {
+		if running.Alive() {
+			t.Error("workspace agent must stop before archiving")
+		}
+		archived = id
+		return nil
+	}}
+	deleted := false
+	p := &archiveTopicPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, deleteTopic: func(any) (bool, error) {
+		deleted = true
+		return true, nil
+	}}
+	e := NewEngine("test", global, []Platform{p}, "", LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	old := e.sessions.GetOrCreateActive(key)
+	old.SetAgentSessionID("old-global", global.Name())
+	e.workspacePool = newWorkspacePool(DefaultWorkspaceIdleTimeout)
+	ws := e.workspacePool.GetOrCreate(workspace)
+	ws.agent, ws.sessions = bound, NewSessionManager("")
+	selected := ws.sessions.GetOrCreateActive(key)
+	selected.SetAgentSessionID("bound-session", bound.Name())
+	e.bindSendWorkDir(key, workspace)
+	e.interactiveStates[workspace+":"+key] = &interactiveState{agentSession: running, busySession: selected}
+	e.ReceiveMessage(p, &Message{SessionKey: key, Content: "/archive"})
+	if archived != "bound-session" || !deleted || !selected.IsArchived() || old.IsArchived() {
+		t.Fatalf("archived=%q deleted=%v bound=%v global=%v", archived, deleted, selected.IsArchived(), old.IsArchived())
+	}
+}
+
+type providerArchiveAgent struct {
+	*archiveCommandAgent
+	provider string
+}
+
+func (a *providerArchiveAgent) ArchiveSessionWithProvider(_ context.Context, id, provider string) error {
+	a.provider = provider
+	return a.archive(id)
+}
+
+func TestCmdArchive_PassesSavedProviderAfterRestart(t *testing.T) {
+	a := &providerArchiveAgent{archiveCommandAgent: &archiveCommandAgent{Agent: &stubAgent{}, archive: func(string) error { return nil }}}
+	p := &stubPlatformEngine{n: "test"}
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	e := NewEngine("test", a, []Platform{p}, path, LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	session := e.sessions.GetOrCreateActive("test:topic")
+	session.SetAgentSessionID("saved-thread", a.Name())
+	session.SetActiveProvider("saved-profile")
+	e.sessions.Save()
+	e.sessions = NewSessionManager(path)
+	e.ReceiveMessage(p, &Message{SessionKey: "test:topic", Content: "/archive"})
+	if a.provider != "saved-profile" {
+		t.Fatalf("archive provider = %q, want saved-profile", a.provider)
+	}
+}

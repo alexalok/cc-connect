@@ -147,3 +147,34 @@ func TestArchiveSession_RelativeHomeMatchesSessionProfile(t *testing.T) {
 		})
 	}
 }
+
+func TestArchiveSession_UsesSavedProviderWithoutChangingDefault(t *testing.T) {
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir, defaultHome, savedHome := t.TempDir(), t.TempDir(), t.TempDir()
+	a := &Agent{cmd: bin, cliExtraArgs: []string{"-test.run=^TestArchiveRPCProcess$", "--"}, workDir: workDir,
+		configEnv: []string{"CC_ARCHIVE_HELPER=1", "CC_ARCHIVE_WORKDIR=" + workDir, "CC_ARCHIVE_HOME=" + savedHome},
+		providers: []core.ProviderConfig{
+			{Name: "default", Env: map[string]string{"CODEX_HOME": defaultHome, "CC_ARCHIVE_OVERRIDE": "wrong"}},
+			{Name: "saved", Env: map[string]string{"CODEX_HOME": savedHome, "CC_ARCHIVE_OVERRIDE": "session"}},
+		}, activeIdx: 0}
+	archiver, ok := any(a).(interface {
+		ArchiveSessionWithProvider(context.Context, string, string) error
+	})
+	if !ok {
+		t.Fatal("archiving cannot select the saved provider")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := archiver.ArchiveSessionWithProvider(ctx, "thread-to-archive", "saved"); err != nil {
+		t.Fatal(err)
+	}
+	if a.GetActiveProvider().Name != "default" {
+		t.Fatal("archiving changed another topic's default provider")
+	}
+	if err := archiver.ArchiveSessionWithProvider(ctx, "thread-to-archive", "removed"); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("missing provider must fail without default fallback: %v", err)
+	}
+}
