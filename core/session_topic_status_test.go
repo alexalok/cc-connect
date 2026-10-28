@@ -31,7 +31,7 @@ func (p *nativeStatusPlatform) SetConversationStatus(_ context.Context, target a
 }
 
 func TestSessionTopicStatus_SyncsOnlySelectedIdleNativeSession(t *testing.T) {
-	for _, action := range []string{"idle", "busy", "switch", "delete"} {
+	for _, action := range []string{"idle", "busy", "switch", "delete", "archiving", "archived"} {
 		t.Run(action, func(t *testing.T) {
 			a := &nativeStatusAgent{topicMessageAgent: topicMessageAgent{topicDiscoveryAgent: topicDiscoveryAgent{infos: []AgentSessionInfo{{ID: "native", Summary: "Native"}}}}, status: ConversationQuestion}
 			p := &nativeStatusPlatform{topicSyncPlatform: topicSyncPlatform{target: "owner"}}
@@ -49,6 +49,12 @@ func TestSessionTopicStatus_SyncsOnlySelectedIdleNativeSession(t *testing.T) {
 					e.sessions.GetOrCreateActive(p.keys[0]).TryLock()
 				case "switch":
 					e.sessions.NewSession(p.keys[0], "")
+				case "archiving", "archived":
+					session := e.sessions.GetOrCreateActive(p.keys[0])
+					session.mu.Lock()
+					session.archiving = action == "archiving"
+					session.Archived = action == "archived"
+					session.mu.Unlock()
 				case "delete":
 					e.sessions.mu.Lock()
 					e.sessions.deletedAgentSessionIDs = map[string]bool{"native": true}

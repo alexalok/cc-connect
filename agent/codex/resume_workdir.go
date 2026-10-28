@@ -15,6 +15,11 @@ import (
 // codexResumeWorkDir resolves a concrete session's saved directory without
 // changing the agent's default directory or rewriting its transcripts.
 func codexResumeWorkDir(sessionID, codexHome string) (string, error) {
+	return codexStoredWorkDir(sessionID, codexHome, false)
+}
+
+// Inspection may include native archives; ordinary startup must not resume them.
+func codexStoredWorkDir(sessionID, codexHome string, includeArchived bool) (string, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return "", fmt.Errorf("codex: cannot resolve a working directory for an empty session ID")
 	}
@@ -26,22 +31,28 @@ func codexResumeWorkDir(sessionID, codexHome string) (string, error) {
 	}
 	var candidates []candidate
 	sessionsDir := filepath.Join(resolveCodexHomeDir(codexHome), "sessions")
-	err := filepath.WalkDir(sessionsDir, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") || !strings.Contains(entry.Name(), sessionID) {
+	roots := []string{sessionsDir}
+	if includeArchived {
+		roots = append(roots, filepath.Join(resolveCodexHomeDir(codexHome), "archived_sessions"))
+	}
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") || !strings.Contains(entry.Name(), sessionID) {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			candidates = append(candidates, candidate{path: path, modified: info.ModTime()})
 			return nil
+		})
+		if err != nil && !(includeArchived && os.IsNotExist(err)) {
+			return "", fmt.Errorf("codex: locate session %s working directory: %w", sessionID, err)
 		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		candidates = append(candidates, candidate{path: path, modified: info.ModTime()})
-		return nil
-	})
-	if err != nil {
-		return "", fmt.Errorf("codex: locate session %s working directory: %w", sessionID, err)
 	}
 	// Source normalization can rewrite an older segment during /list. Prefer
 	// persisted event timestamps so that rewrite cannot make it the newest.

@@ -582,7 +582,7 @@ func (a *Agent) GetSessionWorkDir(ctx context.Context, sessionID, providerName s
 	if err != nil {
 		return "", fmt.Errorf("codex: resolve profile directory: %w", err)
 	}
-	workDir, err := codexResumeWorkDir(sessionID, codexHome)
+	workDir, err := codexStoredWorkDir(sessionID, codexHome, true)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return "", ctxErr
 	}

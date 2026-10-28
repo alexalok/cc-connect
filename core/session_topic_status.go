@@ -54,7 +54,7 @@ func (w *sessionTopicSync) mirrorTopicStatus(ctx context.Context, key, id string
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
-	if session.AgentSessionID != id || session.busy || session.lockGen != gen {
+	if session.AgentSessionID != id || session.busy || session.lockGen != gen || session.archiving || session.Archived {
 		return nil
 	}
 	setter.SetConversationStatus(ctx, reply, status)

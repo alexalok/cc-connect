@@ -262,3 +262,29 @@ func TestAgentGetSessionWorkDir_UnknownSavedProviderDoesNotUseDefaultProfile(t *
 		t.Fatal("failed saved-provider lookup changed the agent defaults")
 	}
 }
+
+func TestAgentGetSessionWorkDir_InspectsArchivedRolloutWithoutResumingIt(t *testing.T) {
+	home, directory := t.TempDir(), t.TempDir()
+	body := resumeWorkDirRecord(t, "session_meta", map[string]any{"id": "archived-chat", "cwd": directory})
+	original := writeResumeWorkDirRollout(t, home, "rollout-archived-chat.jsonl", body)
+	archiveDir := filepath.Join(home, "archived_sessions")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archived := filepath.Join(archiveDir, filepath.Base(original))
+	if err := os.Rename(original, archived); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{codexHome: home, listAllSessions: true, cmd: "must-not-start", activeIdx: -1}
+	got, err := a.GetSessionWorkDir(context.Background(), "archived-chat", "")
+	if err != nil || got != directory {
+		t.Fatalf("archived directory = %q, %v; want %q", got, err, directory)
+	}
+	if _, err := codexResumeWorkDir("archived-chat", home); err == nil {
+		t.Fatal("normal resume must still exclude archives")
+	}
+	data, err := os.ReadFile(archived)
+	if err != nil || string(data) != body {
+		t.Fatalf("inspection changed archived history: %q, %v", data, err)
+	}
+}

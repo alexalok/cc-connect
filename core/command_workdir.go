@@ -36,7 +36,7 @@ func (e *Engine) sessionCommandWorkDir(agent Agent, sessions *SessionManager, in
 	if sessions == nil {
 		return "", nil
 	}
-	selected := sessions.GetOrCreateActive(sessionKey)
+	selected := sessions.GetOrCreateActiveForRead(sessionKey)
 	selected.mu.Lock()
 	id, providerName := selected.AgentSessionID, selected.ActiveProvider
 	selected.mu.Unlock()
