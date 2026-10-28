@@ -3466,6 +3466,48 @@ func TestCUJ_A11_RecallCancelsDeferredInput(t *testing.T) {
 	}
 }
 
+func TestCUJ_A12_SettingsChangeDuringStartupRunsFollowup(t *testing.T) {
+	for _, setting := range []struct {
+		command string
+		message MsgKey
+		value   string
+	}{
+		{"/model switch new-model", MsgModelChanged, "new-model"},
+		{"/reasoning high", MsgReasoningChanged, "high"},
+	} {
+		t.Run(setting.command, func(t *testing.T) {
+			env := newReceiptAckEnv(t, nil)
+			env.engine.SetBusyMessageMode("steer")
+			replacement := &receiptAgentSession{queuingAgentSession: newQueuingSession("replacement")}
+			starts := 0
+			env.engine.agent = &startupSettingsAgent{controllableAgent: &controllableAgent{startSessionFn: func(ctx context.Context, id string) (AgentSession, error) {
+				starts++
+				if starts == 1 {
+					return env.startup.StartSession(ctx, id)
+				}
+				return replacement, nil
+			}}}
+			env.send("first", "first task", 1000)
+			env.awaitStartup()
+			responsiveDispatch(t, func() { env.send("setting", setting.command, 2000) })
+			env.awaitVisible(env.engine.i18n.Tf(setting.message, setting.value))
+			env.send("replacement", "replacement task", 3000)
+			close(env.startup.release)
+			env.waitFor("follow-up reaches the new agent", 3*time.Second, func() bool {
+				replacement.sendMu.Lock()
+				defer replacement.sendMu.Unlock()
+				return len(replacement.sendCalls) == 1
+			})
+			if env.startup.session.Alive() {
+				t.Fatal("settings change did not close the canceled startup")
+			}
+			replacement.events <- Event{Type: EventResult, Content: "updated agent answered", Done: true}
+			env.awaitVisible("updated agent answered")
+			env.assertReceipts("first", "replacement")
+		})
+	}
+}
+
 // CUJ: typing spans startup and tool work, follows a queued turn, and ends on /stop.
 func TestCUJ_A10_TypingPersistsAcrossStartupToolsAndQueue(t *testing.T) {
 	p := &typingPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -14,6 +15,41 @@ type dispatchSession struct {
 	steerMessages []Message
 	attachments   []Message
 }
+
+type startupSettingsAgent struct {
+	*controllableAgent
+	mu        sync.Mutex
+	model     string
+	reasoning string
+}
+
+func (a *startupSettingsAgent) SetModel(model string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.model = model
+}
+
+func (a *startupSettingsAgent) GetModel() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.model
+}
+
+func (a *startupSettingsAgent) AvailableModels(context.Context) []ModelOption { return nil }
+
+func (a *startupSettingsAgent) SetReasoningEffort(effort string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.reasoning = effort
+}
+
+func (a *startupSettingsAgent) GetReasoningEffort() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.reasoning
+}
+
+func (a *startupSettingsAgent) AvailableReasoningEfforts() []string { return []string{"high"} }
 
 func (s *dispatchSession) Send(prompt, id string, images []ImageAttachment, files []FileAttachment) error {
 	s.mu.Lock()
@@ -292,4 +328,58 @@ func TestBusyMessageMode_StopDuringStartupAllowsImmediateReplacement(t *testing.
 	}
 	replacement.events <- Event{Type: EventResult, Content: "replacement done", Done: true}
 	env.awaitVisible("replacement done")
+}
+
+func TestCleanupCAS_CommandPreservesReplacementDuringClose(t *testing.T) {
+	e := newTestEngine()
+	t.Cleanup(e.cancel)
+	const key = "test:cleanup"
+	old := newBlockingCloseSession("old")
+	e.interactiveStates[key] = &interactiveState{agentSession: old}
+	done := make(chan struct{})
+	go func() { defer close(done); e.cleanupInteractiveState(key) }()
+	<-old.closeStarted
+	session := e.sessions.GetOrCreateActive(key)
+	gen, _ := session.TryLock()
+	replacement := &interactiveState{busySession: session}
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = replacement
+	e.interactiveMu.Unlock()
+	close(old.releaseClose)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not finish")
+	}
+	e.interactiveMu.Lock()
+	current := e.interactiveStates[key]
+	e.interactiveMu.Unlock()
+	if current != replacement || !session.canStartTurn(gen) {
+		t.Fatal("stale command cleanup destroyed the replacement worker")
+	}
+}
+
+func TestBusyMessageMode_StartupCleanupWaitsForLateShutdown(t *testing.T) {
+	env := newReceiptAckEnv(t, nil)
+	env.send("first", "first task", 1000)
+	env.awaitStartup()
+	const key = "test:receipt-user"
+	env.engine.cleanupInteractiveState(key)
+	done := make(chan bool, 1)
+	go func() { done <- env.engine.awaitSessionClose(key) }()
+	select {
+	case <-done:
+		close(env.startup.release)
+		t.Fatal("teardown wait completed before the canceled startup returned")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(env.startup.release)
+	select {
+	case settled := <-done:
+		if !settled || env.startup.session.Alive() {
+			t.Fatal("teardown wait completed before the late agent was closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("teardown wait did not finish after late agent shutdown")
+	}
 }

@@ -4613,6 +4613,11 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	placeholder.busySession = session
 	placeholder.mu.Unlock()
 	start := func(id string) (AgentSession, error, bool) {
+		// Cancellation can detach the placeholder before StartSession returns.
+		// Keep teardown waiters (including /archive) blocked until any late
+		// process has either been adopted or closed with unsafe-resume guards.
+		finishStart := e.beginSessionClose(sessionKey)
+		defer finishStart()
 		e.interactiveMu.Unlock()
 		as, err := agent.StartSession(e.ctx, id)
 		e.interactiveMu.Lock()
@@ -4733,9 +4738,9 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 // a stale goroutine (still running after /new created a fresh Session object and
 // a new turn started on it) from accidentally destroying the replacement state.
 //
-// IMPORTANT: The state is deleted from the map AFTER the agent session is closed
-// to avoid race conditions where concurrent requests see an empty map while the
-// agent session is still being shut down (which can take up to 130s for Stop hooks).
+// A live agent stays in the map until close completes. A startup placeholder
+// is detached immediately and its lock generation retired; the startup worker
+// closes any late agent instead of adopting it.
 func (e *Engine) cleanupInteractiveState(sessionKey string, expected ...*interactiveState) {
 	e.interactiveMu.Lock()
 	state, ok := e.interactiveStates[sessionKey]
@@ -4750,9 +4755,23 @@ func (e *Engine) cleanupInteractiveState(sessionKey string, expected ...*interac
 	var closePlatform Platform
 	var closeReplyCtx any
 	var closeOwner Agent
+	var finishClose func()
 	if ok && state != nil {
 		state.mu.Lock()
 		agentSession = state.agentSession
+		if agentSession != nil {
+			// Register before releasing the map lock, so overlapping cleanup
+			// cannot expose an untracked teardown to a replacement worker.
+			finishClose = e.beginSessionClose(sessionKey)
+		} else {
+			// Settings commands may reset startup while notifications below
+			// are still being sent. Retire the worker before releasing the map
+			// lock so its late return cannot adopt this placeholder again.
+			if state.busySession != nil {
+				state.busySession.ForceUnlock()
+			}
+			delete(e.interactiveStates, sessionKey)
+		}
 		state.agentSession = nil
 		closePlatform = state.platform
 		closeReplyCtx = state.replyCtx
@@ -4764,6 +4783,9 @@ func (e *Engine) cleanupInteractiveState(sessionKey string, expected ...*interac
 		state.mu.Unlock()
 	}
 	e.interactiveMu.Unlock()
+	if finishClose != nil {
+		defer finishClose()
+	}
 
 	// Notify senders of any queued messages that will never be processed.
 	if ok && state != nil {
@@ -4790,14 +4812,14 @@ func (e *Engine) cleanupInteractiveState(sessionKey string, expected ...*interac
 	// an empty map and reports "No execution in progress" while
 	// the agent session Close() is still blocking (up to 130s).
 	if agentSession != nil {
-		e.closeAgentSessionWithTimeout(sessionKey, agentSession, closePlatform, closeReplyCtx, closeOwner)
+		e.closeAgentSession(sessionKey, agentSession, closePlatform, closeReplyCtx, closeOwner)
 	}
 
 	// Now delete the state from the map after the session is closed.
 	e.interactiveMu.Lock()
 	// Re-check that the state hasn't been replaced during the close
 	currentState, currentOk := e.interactiveStates[sessionKey]
-	if currentOk && len(expected) > 0 && expected[0] != nil && currentState != expected[0] {
+	if !currentOk || currentState != state {
 		// Another turn has replaced the state during our close — don't delete it.
 		e.interactiveMu.Unlock()
 		return
