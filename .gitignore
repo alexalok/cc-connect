@@ -158,5 +158,9 @@ Desktop.ini
 secrets/
 credentials/
 
+# Telegram user-account authorization sessions
+*.session.json
+.telegram-user-session-*
+
 .codex
 cc-connect-new

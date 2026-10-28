@@ -469,6 +469,7 @@ cc-connect update --pre     # Include pre-releases
 | Platform | DingTalk | ✅ Stream — no public IP needed |
 | Platform | WPS Xiezuo | ✅ WebSocket — no public IP needed |
 | Platform | Telegram | ✅ Long Polling — no public IP needed |
+| Platform | Telegram user account | ✅ MTProto — replies from a regular account |
 | Platform | Slack | ✅ Socket Mode — no public IP needed |
 | Platform | Discord | ✅ Gateway — no public IP needed |
 | Platform | Weibo | ✅ WebSocket — no public IP needed |
@@ -488,6 +489,7 @@ cc-connect update --pre     # Include pre-releases
 | DingTalk | [docs/dingtalk.md](docs/dingtalk.md) | Stream | No |
 | WPS Xiezuo | [docs/wps-xiezuo.md](docs/wps-xiezuo.md) | WebSocket | No |
 | Telegram | [docs/telegram.md](docs/telegram.md) | Long Polling | No |
+| Telegram user account | [docs/telegram-user.md](docs/telegram-user.md) | MTProto | No |
 | Slack | [docs/slack.md](docs/slack.md) | Socket Mode | No |
 | Google Chat | [docs/googlechat.md](docs/googlechat.md) | Cloud Pub/Sub | No |
 | Discord | [docs/discord.md](docs/discord.md) | Gateway | No |

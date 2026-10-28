@@ -214,21 +214,22 @@ var topLevelCommandHandlers = map[string]func([]string){
 	"check-update": func(_ []string) {
 		checkUpdate()
 	},
-	"provider":  runProviderCommand,
-	"send":      runSend,
-	"cron":      runCron,
-	"timer":     runTimer,
-	"at":        runTimer,
-	"relay":     runRelay,
-	"sessions":  runSessions,
-	"agent-sid": runAgentSID,
-	"daemon":    runDaemon,
-	"feishu":    runFeishu,
-	"tuitui":    runTuiTui,
-	"weixin":    runWeixin,
-	"yuanbao":   runYuanbao,
-	"doctor":    runDoctor,
-	"web":       runWeb,
+	"provider":      runProviderCommand,
+	"send":          runSend,
+	"cron":          runCron,
+	"timer":         runTimer,
+	"at":            runTimer,
+	"relay":         runRelay,
+	"sessions":      runSessions,
+	"agent-sid":     runAgentSID,
+	"daemon":        runDaemon,
+	"feishu":        runFeishu,
+	"tuitui":        runTuiTui,
+	"weixin":        runWeixin,
+	"telegram-user": runTelegramUser,
+	"yuanbao":       runYuanbao,
+	"doctor":        runDoctor,
+	"web":           runWeb,
 }
 
 func main() {
@@ -1666,6 +1667,7 @@ Flags:
   --help             Show this help message
 
 Commands:
+  telegram-user      %s
   daemon             Manage cc-connect as a background service (systemd/launchd/schtasks)
     install          Install and start the daemon service
     uninstall        Remove the daemon service
@@ -1738,7 +1740,7 @@ Examples:
   cc-connect config format            Format the config file
   cc-connect config example > c.toml  Save example config to a file
 
-`, v, updateHint)
+`, v, updateHint, core.NewI18n(core.LangEnglish).T(core.MsgTelegramUserCommand))
 }
 
 func setupLogger(level string, w io.Writer) {

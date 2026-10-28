@@ -2193,6 +2193,8 @@ func TestCUJ_D5_GroupOnlyLinkedToIntegration(t *testing.T) {
 
 // CUJ-D6 · Inbound rate_limit kicks in when a session bursts messages
 // faster than allowed.
+// The per-sender, silent-drop variant for Telegram user accounts is exercised
+// with a real Engine in platform/telegram_user/cuj_test.go (including recovery).
 func TestCUJ_D6_InboundRateLimitDrops(t *testing.T) {
 	env := newCUJEnv(t)
 	// Allow at most 2 messages per minute per session.
