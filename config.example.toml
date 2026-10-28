@@ -785,6 +785,10 @@ level = "info" # debug, info, warn, error
 
 [[projects]]
 name = "my-backend"
+# busy_message_mode = "queue"     # Normal messages while busy: "queue" (default) or "steer".
+#                                # /queue always queues; /ps explicitly supplements the current task.
+#                                # 忙碌时普通消息的行为："queue"（默认）或 "steer"。
+#                                # /queue 始终排队；/ps 向当前任务补充指令。
 # reply_footer = false             # Master toggle for the per-turn reply footer (default: true / show)
 #                                   # 每条助手回复底部状态 footer 总开关（默认 true 显示）
 # show_context_indicator = false   # Hide the footer's first line: model · [effort ·] out/in/cw/cr · ctx % (default: true)

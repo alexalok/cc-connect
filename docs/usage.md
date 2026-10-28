@@ -47,6 +47,7 @@ Each user gets an independent session with full conversation context. Manage ses
 | `/mode [name]` | View or switch permission mode |
 | `/stop` | Stop current execution |
 | `/ps <message>` / `/btw <message>` | Send a supplement to the running task |
+| `/queue <message>` | Queue a follow-up, or start immediately when idle; supports attachments |
 | `/help` | Show available commands |
 
 During a session, the agent may request tool permissions. Reply **allow** / **deny** / **allow all**.
@@ -76,6 +77,30 @@ and multi-workspace ownership filters still apply. This does not mirror activity
 from an independently running Codex client into the chat.
 
 Use `/ps` (or `/btw`) to add instructions while a task is running. An idle session rejects the command. The delivery confirmation means the bridge sent the request, not that the agent has finished processing it.
+
+Normal messages queue by default while a task is running. To steer the active
+task instead, set this option on the project and restart the bridge:
+
+```toml
+[[projects]]
+name = "demo"
+busy_message_mode = "steer" # "queue" (default) or "steer"
+```
+
+Steering uses the backend's native active-turn API, currently supported by Codex
+with `backend = "app_server"`. Text, images, and files are supported. Messages
+received during startup, after the agent's turn has ended, or by a backend
+without native steering support still queue, with the usual queue confirmation.
+A steering delivery error is reported without automatically retrying or queueing
+the message, since the agent may already have received it.
+
+`/queue <message>` always selects the FIFO queue, regardless of this setting.
+Each queued message becomes a separate turn after the preceding turn finishes;
+`[queue].max_depth` still limits pending messages. If idle, it starts immediately.
+The payload is literal agent input: quotes and newlines are preserved, and
+`/queue /some-command` does not execute a bridge command. Attachments and reply
+quotes are retained. `/ps` and `/btw` keep their explicit supplement behavior in
+either mode.
 
 With Pi, enable `rpc = true` for native steering: the supplement is queued for the next model call, after the current assistant turn's tool calls. If Pi has already finished while the bridge is still delivering its reply, the supplement starts a follow-up turn. Pi's default JSON mode keeps its existing one-shot sending behavior; it cannot inject into an already running process.
 

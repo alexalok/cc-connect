@@ -422,6 +422,7 @@ type Engine struct {
 	agentSessionIdleTimeoutNanos atomic.Int64
 	agentSessionIdleSeq          atomic.Uint64
 	maxQueuedMessages            int
+	busyMessageMode              string
 	dirHistory                   *DirHistory
 	baseWorkDir                  string
 	projectState                 *ProjectStateStore
@@ -488,6 +489,7 @@ type Engine struct {
 
 	// Interactive agent session management
 	interactiveMu     sync.Mutex
+	agentStartMu      sync.Mutex                   // serialize session-specific agent setup without blocking incoming messages
 	interactiveStates map[string]*interactiveState // key = sessionKey
 
 	// Teardown tracking. A session's state is removed from interactiveStates
@@ -619,16 +621,21 @@ type interactiveState struct {
 	// currentTurnUserMessageTimeMs is the UserMessageTimeMs for the in-flight
 	// foreground turn (including a queued turn after EventResult).
 	currentTurnUserMessageTimeMs int64
+	// Steering advances inbound deduplication, but must not expire older /queue messages.
+	lastSteeredUserMessageTimeMs int64
 }
 
 // latestUserMessageWatermarkLocked returns the highest UserMessageTimeMs among
-// completed turns, the in-flight turn, and queued messages for this session.
+// completed turns, the in-flight turn, supplements, and queued messages for this session.
 // state.mu must be held by the caller.
 func latestUserMessageWatermarkLocked(state *interactiveState) int64 {
 	if state == nil {
 		return 0
 	}
 	wm := state.lastCompletedUserMessageTimeMs
+	if state.lastSteeredUserMessageTimeMs > wm {
+		wm = state.lastSteeredUserMessageTimeMs
+	}
 	if state.currentTurnUserMessageTimeMs > wm {
 		wm = state.currentTurnUserMessageTimeMs
 	}
@@ -645,6 +652,7 @@ type userMessageWatermarkSnapshot struct {
 	completedMs int64
 	inFlightMs  int64
 	queuedMaxMs int64
+	steeredMs   int64
 }
 
 // userMessageWatermarkSnapshotLocked captures the per-source watermark values.
@@ -656,6 +664,7 @@ func userMessageWatermarkSnapshotLocked(state *interactiveState) userMessageWate
 	snap := userMessageWatermarkSnapshot{
 		completedMs: state.lastCompletedUserMessageTimeMs,
 		inFlightMs:  state.currentTurnUserMessageTimeMs,
+		steeredMs:   state.lastSteeredUserMessageTimeMs,
 	}
 	for _, q := range state.pendingMessages {
 		if q.userMessageTimeMs > snap.queuedMaxMs {
@@ -672,6 +681,9 @@ func (s userMessageWatermarkSnapshot) acceptReason() string {
 		return "none"
 	}
 	// Prefer the most specific active state when multiple sources tie.
+	if s.steeredMs == s.maxMs && s.steeredMs > 0 {
+		return "steered"
+	}
 	if s.inFlightMs == s.maxMs && s.inFlightMs > 0 {
 		return "processing"
 	}
@@ -3170,11 +3182,15 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		interactiveKey = resolvedWorkspace + ":" + msg.SessionKey
 	}
 
-	if len(msg.Images) == 0 && strings.HasPrefix(content, "/") {
+	if (len(msg.Images) == 0 || isQueueCommand(content)) && strings.HasPrefix(content, "/") {
 		if e.handleCommand(p, msg, content) {
 			return
 		}
 		// Unrecognized slash command — fall through to agent as normal message
+	}
+	if msg.forceQueue {
+		e.dispatchUserMessage(p, msg, sessions, agent, interactiveKey, resolvedWorkspace)
+		return
 	}
 
 	// Permission responses bypass the session lock.
@@ -3228,6 +3244,10 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		return
 	}
 
+	e.dispatchUserMessage(p, msg, sessions, agent, interactiveKey, resolvedWorkspace)
+}
+
+func (e *Engine) dispatchUserMessage(p Platform, msg *Message, sessions *SessionManager, agent Agent, interactiveKey, resolvedWorkspace string) {
 	if e.discardStaleUserMessageIfNeeded(interactiveKey, msg) {
 		return
 	}
@@ -3284,6 +3304,9 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			}
 		}
 		// ── end self-heal; queueing path below is unchanged ────────────────
+		if !msg.forceQueue && e.busyMessageMode == "steer" && e.steerBusyMessage(p, msg, session, sessions, interactiveKey) {
+			return
+		}
 		// Session is busy — try to queue the message for the running turn
 		// so the agent processes it immediately after the current turn ends.
 		if e.queueMessageForBusySession(p, msg, interactiveKey) {
@@ -4081,7 +4104,10 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	if setter, ok := p.(ConversationStatusSetter); ok {
 		setter.SetConversationStatus(e.ctx, msg.ReplyCtx, ConversationWorking)
 	}
-	state := e.getOrCreateInteractiveStateWith(interactiveKey, p, msg.ReplyCtx, session, sessions, agentOverride, ccSessionKey)
+	state := e.getOrCreateInteractiveStateWith(interactiveKey, p, msg.ReplyCtx, session, sessions, agentOverride, ccSessionKey, lockGen)
+	if state == nil {
+		return
+	}
 
 	// Set workspaceDir on the state for idle reaper identification
 	if workspaceDir != "" {
@@ -4372,15 +4398,20 @@ func adoptPendingFromPlaceholder(existing, newState *interactiveState) {
 
 // When agentOverride is non-nil it is used instead of e.agent to start the session.
 // ccSessionKey, when non-empty, is used for CC_SESSION_KEY env injection; otherwise sessionKey is used.
-func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, replyCtx any, session *Session, sessions *SessionManager, agentOverride Agent, ccSessionKey string) *interactiveState {
+func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, replyCtx any, session *Session, sessions *SessionManager, agentOverride Agent, ccSessionKey string, lockGen uint64) *interactiveState {
 	// /stop removes the state from the map immediately but tears the process
 	// down in the background. Wait that teardown out *before* taking the lock:
 	// spawning now would start a second process on the same agent session ID
 	// while the first one is still alive and writing to the same transcript.
 	closeSettled := e.awaitSessionClose(sessionKey)
 
+	e.agentStartMu.Lock()
+	defer e.agentStartMu.Unlock()
 	e.interactiveMu.Lock()
 	defer e.interactiveMu.Unlock()
+	if !session.canStartTurn(lockGen) {
+		return nil
+	}
 
 	state, ok := e.interactiveStates[sessionKey]
 	if ok && state.agentSession != nil && state.agentSession.Alive() {
@@ -4529,8 +4560,31 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	}
 
 	isResume := startSessionID != ""
+	// Keep the placeholder visible to incoming messages while starting the
+	// agent. The startup mutex protects per-session env/provider setup; the
+	// global map lock must remain available for queueing and cancellation.
+	placeholder := e.interactiveStates[sessionKey]
+	start := func(id string) (AgentSession, error, bool) {
+		e.interactiveMu.Unlock()
+		as, err := agent.StartSession(e.ctx, id)
+		e.interactiveMu.Lock()
+		if e.ctx.Err() != nil || !session.canStartTurn(lockGen) || e.interactiveStates[sessionKey] != placeholder {
+			if as != nil {
+				e.interactiveMu.Unlock()
+				if closeErr := as.Close(); closeErr != nil {
+					slog.Warn("close canceled agent startup", "session", sessionKey, "error", closeErr)
+				}
+				e.interactiveMu.Lock()
+			}
+			return nil, nil, false
+		}
+		return as, err, true
+	}
 	startAt := time.Now()
-	agentSession, err := agent.StartSession(e.ctx, startSessionID)
+	agentSession, err, current := start(startSessionID)
+	if !current {
+		return nil
+	}
 	startElapsed := time.Since(startAt)
 	if err != nil {
 		// If resume/continue failed, try a fresh session as fallback.
@@ -4543,7 +4597,10 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 			session.SetAgentSessionID("", agent.Name())
 			sessions.Save()
 			startAt = time.Now()
-			agentSession, err = agent.StartSession(e.ctx, "")
+			agentSession, err, current = start("")
+			if !current {
+				return nil
+			}
 			startElapsed = time.Since(startAt)
 			if err == nil {
 				slog.Info("fresh session started after resume failure",
@@ -7166,6 +7223,7 @@ var builtinCommands = []struct {
 	{[]string{"web"}, "web"},
 	{[]string{"diff"}, "diff"},
 	{[]string{"ps", "btw"}, "ps"},
+	{[]string{"queue"}, "queue"},
 }
 
 func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
@@ -7285,6 +7343,10 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 	parts := splitCommandArgs(raw)
 	cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
 	args := parts[1:]
+	if isQueueCommand(raw) {
+		cmd = "queue"
+		args = nil // /queue keeps its raw payload, including newlines and quotes.
+	}
 
 	cmdID := matchPrefix(cmd, builtinCommands)
 
@@ -7415,6 +7477,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdWeb(p, msg, args)
 	case "ps":
 		e.cmdPs(p, msg, args)
+	case "queue":
+		return e.prepareQueuedMessage(p, msg, raw)
 	default:
 		if custom, ok := e.commands.Resolve(cmd); ok {
 			if disabledCmds[strings.ToLower(custom.Name)] {
@@ -10229,6 +10293,7 @@ func helpCardGroups() []helpCardGroup {
 				{command: "/compress", action: "cmd:/compress"},
 				{command: "/stop", action: "act:/stop"},
 				{command: "/ps", action: "cmd:/ps"},
+				{command: "/queue", action: "cmd:/queue"},
 			},
 		},
 		{

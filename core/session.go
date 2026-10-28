@@ -88,6 +88,14 @@ func (s *Session) Busy() bool {
 	return s.busy
 }
 
+// canStartTurn rejects workers whose busy-lock generation was canceled while
+// waiting for agent startup. Generation zero is used by direct session tests.
+func (s *Session) canStartTurn(gen uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return gen == 0 || (s.busy && s.lockGen == gen)
+}
+
 func (s *Session) Unlock(gen uint64) {
 	s.unlock(true, gen)
 }

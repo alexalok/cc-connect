@@ -698,7 +698,8 @@ func main() {
 			engine.SetMaxTurnTime(time.Duration(*cfg.MaxTurnTimeMins) * time.Minute)
 		}
 
-		// Wire queue depth
+		// Wire busy-message behavior and queue depth.
+		engine.SetBusyMessageMode(proj.BusyMessageMode)
 		if cfg.Queue.MaxDepth != nil && *cfg.Queue.MaxDepth > 0 {
 			engine.SetMaxQueuedMessages(*cfg.Queue.MaxDepth)
 		}
