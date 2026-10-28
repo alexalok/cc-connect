@@ -24,7 +24,8 @@ func TestArchiveRPCProcess(t *testing.T) {
 		os.Exit(2)
 	}
 	cwd, _ := os.Getwd()
-	if cwd != os.Getenv("CC_ARCHIVE_WORKDIR") || os.Getenv("CODEX_HOME") != os.Getenv("CC_ARCHIVE_HOME") || os.Getenv("CC_ARCHIVE_OVERRIDE") != "session" {
+	home, _ := filepath.Abs(os.Getenv("CODEX_HOME"))
+	if cwd != os.Getenv("CC_ARCHIVE_WORKDIR") || home != os.Getenv("CC_ARCHIVE_HOME") || os.Getenv("CC_ARCHIVE_OVERRIDE") != "session" {
 		os.Exit(3)
 	}
 	scanner := bufio.NewScanner(os.Stdin)
@@ -119,32 +120,38 @@ func TestArchiveSession_RelativeHomeMatchesSessionProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, source := range []string{"explicit", "process", "project", "session"} {
-		t.Run(source, func(t *testing.T) {
-			t.Setenv("CODEX_HOME", "wrong-profile")
-			a := &Agent{
-				cmd: bin, cliExtraArgs: []string{"-test.run=^TestArchiveRPCProcess$", "--"},
-				workDir: workDir, listAllSessions: true,
-				configEnv: []string{"CC_ARCHIVE_HELPER=1", "CC_ARCHIVE_WORKDIR=" + workDir,
-					"CC_ARCHIVE_HOME=" + filepath.Join(root, "profile"), "CC_ARCHIVE_OVERRIDE=session"},
-			}
-			switch source {
-			case "explicit":
-				a.codexHome = "profile"
-			case "process":
-				t.Setenv("CODEX_HOME", "profile")
-			case "project":
-				a.configEnv = append(a.configEnv, "CODEX_HOME=profile")
-			case "session":
-				a.configEnv = append(a.configEnv, "CODEX_HOME=wrong-project-profile")
-				a.sessionEnv = []string{"CODEX_HOME=profile"}
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := a.ArchiveSession(ctx, "thread-to-archive"); err != nil {
-				t.Fatalf("archive must use the profile resolved from the bridge directory: %v", err)
-			}
-		})
+	for _, listAll := range []bool{false, true} {
+		for _, source := range []string{"explicit", "process", "project", "session"} {
+			t.Run(fmt.Sprintf("list_all=%v/%s", listAll, source), func(t *testing.T) {
+				profileRoot := workDir
+				if listAll {
+					profileRoot = root
+				}
+				t.Setenv("CODEX_HOME", "wrong-profile")
+				a := &Agent{
+					cmd: bin, cliExtraArgs: []string{"-test.run=^TestArchiveRPCProcess$", "--"},
+					workDir: workDir, listAllSessions: listAll,
+					configEnv: []string{"CC_ARCHIVE_HELPER=1", "CC_ARCHIVE_WORKDIR=" + workDir,
+						"CC_ARCHIVE_HOME=" + filepath.Join(profileRoot, "profile"), "CC_ARCHIVE_OVERRIDE=session"},
+				}
+				switch source {
+				case "explicit":
+					a.codexHome = "profile"
+				case "process":
+					t.Setenv("CODEX_HOME", "profile")
+				case "project":
+					a.configEnv = append(a.configEnv, "CODEX_HOME=profile")
+				case "session":
+					a.configEnv = append(a.configEnv, "CODEX_HOME=wrong-project-profile")
+					a.sessionEnv = []string{"CODEX_HOME=profile"}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := a.ArchiveSession(ctx, "thread-to-archive"); err != nil {
+					t.Fatalf("archive must use the same profile as startup: %v", err)
+				}
+			})
+		}
 	}
 }
 
