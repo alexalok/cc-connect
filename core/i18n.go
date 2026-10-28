@@ -460,6 +460,7 @@ const (
 	MsgPermCardBody    MsgKey = "perm_card_body"
 	MsgPermCardNote    MsgKey = "perm_card_note"
 
+	MsgButtonOption         MsgKey = "button_option"
 	MsgAskQuestionTitle     MsgKey = "ask_question_title"
 	MsgAskQuestionNote      MsgKey = "ask_question_note"
 	MsgAskQuestionNoteMulti MsgKey = "ask_question_note_multi"
@@ -530,6 +531,14 @@ const (
 	MsgSessionAutoResetIdle   MsgKey = "session_auto_reset_idle"
 	MsgSessionClosingGraceful MsgKey = "session_closing_graceful"
 
+	MsgArchiveUsage             MsgKey = "archive_usage"
+	MsgArchiveInProgress        MsgKey = "archive_in_progress"
+	MsgArchiveNotSupported      MsgKey = "archive_not_supported"
+	MsgArchiveNoSession         MsgKey = "archive_no_session"
+	MsgArchiveFailed            MsgKey = "archive_failed"
+	MsgArchiveStopFailed        MsgKey = "archive_stop_failed"
+	MsgArchiveSuccess           MsgKey = "archive_success"
+	MsgArchiveTopicFailed       MsgKey = "archive_topic_failed"
 	MsgDeleteUsage              MsgKey = "delete_usage"
 	MsgDeleteSuccess            MsgKey = "delete_success"
 	MsgDeleteActiveDenied       MsgKey = "delete_active_denied"
@@ -596,6 +605,7 @@ const (
 	MsgSearchHint     MsgKey = "search_hint"
 
 	MsgBuiltinCmdNew       MsgKey = "new"
+	MsgBuiltinCmdArchive   MsgKey = "archive"
 	MsgBuiltinCmdList      MsgKey = "list"
 	MsgBuiltinCmdSearch    MsgKey = "search"
 	MsgBuiltinCmdSwitch    MsgKey = "switch"
@@ -1088,6 +1098,7 @@ var messages = map[MsgKey]map[Language]string{
 	MsgHelp: {
 		LangEnglish: "📖 Available Commands\n\n" +
 			"/new [name]\n  Start a new session\n\n" +
+			"/archive\n  Archive current session and remove its topic\n\n" +
 			"/list\n  List agent sessions\n\n" +
 			"/search <keyword>\n  Search sessions by name or ID\n\n" +
 			"/switch <number>\n  Resume a session by its list number\n\n" +
@@ -1132,6 +1143,7 @@ var messages = map[MsgKey]map[Language]string{
 			"Permission modes: default / edit / plan / yolo",
 		LangChinese: "📖 可用命令\n\n" +
 			"/new [名称]\n  创建新会话\n\n" +
+			"/archive\n  归档当前会话并删除话题\n\n" +
 			"/list\n  列出 Agent 会话列表\n\n" +
 			"/search <关键词>\n  搜索会话名称或 ID\n\n" +
 			"/switch <序号>\n  按列表序号切换会话\n\n" +
@@ -1176,6 +1188,7 @@ var messages = map[MsgKey]map[Language]string{
 			"权限模式：default / edit / plan / yolo",
 		LangTraditionalChinese: "📖 可用命令\n\n" +
 			"/new [名稱]\n  建立新會話\n\n" +
+			"/archive\n  封存目前的會話並刪除話題\n\n" +
 			"/list\n  列出 Agent 會話列表\n\n" +
 			"/search <關鍵詞>\n  搜尋會話名稱或 ID\n\n" +
 			"/switch <序號>\n  按列表序號切換會話\n\n" +
@@ -1219,6 +1232,7 @@ var messages = map[MsgKey]map[Language]string{
 			"權限模式：default / edit / plan / yolo",
 		LangJapanese: "📖 利用可能なコマンド\n\n" +
 			"/new [名前]\n  新しいセッションを開始\n\n" +
+			"/archive\n  現在のセッションをアーカイブしてトピックを削除\n\n" +
 			"/list\n  エージェントセッション一覧\n\n" +
 			"/switch <番号>\n  リスト番号でセッションを切り替え\n\n" +
 			"/delete <番号>|1,2,3|3-7|1,3-5,8\n  リスト番号でセッションを単体/複数削除\n\n" +
@@ -1261,6 +1275,7 @@ var messages = map[MsgKey]map[Language]string{
 			"権限モード: default / edit / plan / yolo",
 		LangSpanish: "📖 Comandos disponibles\n\n" +
 			"/new [nombre]\n  Iniciar una nueva sesión\n\n" +
+			"/archive\n  Archivar la sesión actual y eliminar su tema\n\n" +
 			"/list\n  Listar sesiones del agente\n\n" +
 			"/switch <número>\n  Reanudar sesión por su número en la lista\n\n" +
 			"/delete <número>|1,2,3|3-7|1,3-5,8\n  Eliminar una o varias sesiones por número de lista\n\n" +
@@ -1312,6 +1327,7 @@ var messages = map[MsgKey]map[Language]string{
 	MsgHelpSessionSection: {
 		LangEnglish: "**Session Management**\n" +
 			"/new [name] — Start a new session\n" +
+			"/archive — Archive current session and remove its topic\n" +
 			"/list — List agent sessions\n" +
 			"/search <keyword> — Search sessions\n" +
 			"/switch <number> — Resume a session\n" +
@@ -1321,6 +1337,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/history [n] — Show last n messages",
 		LangChinese: "**会话管理**\n" +
 			"/new [名称] — 创建新会话\n" +
+			"/archive — 归档当前会话并删除话题\n" +
 			"/list — 列出会话列表\n" +
 			"/search <关键词> — 搜索会话\n" +
 			"/switch <序号> — 切换会话\n" +
@@ -1330,6 +1347,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/history [n] — 查看最近 n 条消息",
 		LangTraditionalChinese: "**會話管理**\n" +
 			"/new [名稱] — 建立新會話\n" +
+			"/archive — 封存目前的會話並刪除話題\n" +
 			"/list — 列出會話列表\n" +
 			"/search <關鍵詞> — 搜尋會話\n" +
 			"/switch <序號> — 切換會話\n" +
@@ -1339,6 +1357,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/history [n] — 查看最近 n 條訊息",
 		LangJapanese: "**セッション管理**\n" +
 			"/new [名前] — 新しいセッションを開始\n" +
+			"/archive — 現在のセッションをアーカイブしてトピックを削除\n" +
 			"/list — セッション一覧\n" +
 			"/search <キーワード> — セッション検索\n" +
 			"/switch <番号> — セッション切り替え\n" +
@@ -1348,6 +1367,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/history [n] — 直近 n 件のメッセージを表示",
 		LangSpanish: "**Gestión de sesiones**\n" +
 			"/new [nombre] — Iniciar nueva sesión\n" +
+			"/archive — Archivar la sesión actual y eliminar su tema\n" +
 			"/list — Listar sesiones\n" +
 			"/search <keyword> — Buscar sesiones\n" +
 			"/switch <número> — Reanudar sesión\n" +
@@ -2865,6 +2885,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "ボタンが反応しない場合は直接返信: allow / deny / allow all",
 		LangSpanish:            "Si los botones no responden, responda: allow / deny / allow all",
 	},
+	MsgButtonOption: {
+		LangEnglish:            "Option %d",
+		LangChinese:            "选项 %d",
+		LangTraditionalChinese: "選項 %d",
+		LangJapanese:           "選択肢 %d",
+		LangSpanish:            "Opción %d",
+	},
 	MsgAskQuestionTitle: {
 		LangEnglish:            "Agent Question",
 		LangChinese:            "Agent 提问",
@@ -3328,6 +3355,69 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "⏳ 正在結束上一個會話（通常幾秒鐘，最多2分鐘）。新會話將自動啟動。",
 		LangJapanese:           "⏳ 前のセッションを終了中です（通常は数秒、最大2分）。新しいセッションは自動的に開始されます。",
 		LangSpanish:            "⏳ Cerrando la sesión anterior (normalmente unos segundos, hasta 2 minutos). La nueva sesión se iniciará automáticamente.",
+	},
+	MsgArchiveUsage: {
+		LangEnglish:            "Usage: `/archive` — archive the current agent session and remove its topic, including the topic's messages.",
+		LangChinese:            "用法：`/archive` — 归档当前 Agent 会话并删除其话题及话题内的消息。",
+		LangTraditionalChinese: "用法：`/archive` — 封存目前的 Agent 會話並刪除其話題及話題內的訊息。",
+		LangJapanese:           "使い方：`/archive` — 現在のエージェントセッションをアーカイブし、トピックとそのメッセージを削除します。",
+		LangSpanish:            "Uso: `/archive` — archivar la sesión actual del agente y eliminar su tema, incluidos sus mensajes.",
+	},
+	MsgArchiveInProgress: {
+		LangEnglish:            "Session archiving is in progress. Please wait.",
+		LangChinese:            "正在归档会话，请稍候。",
+		LangTraditionalChinese: "正在封存會話，請稍候。",
+		LangJapanese:           "セッションをアーカイブしています。しばらくお待ちください。",
+		LangSpanish:            "Se está archivando la sesión. Espera un momento.",
+	},
+	MsgArchiveNotSupported: {
+		LangEnglish:            "This agent does not support session archiving.",
+		LangChinese:            "当前 Agent 不支持会话归档。",
+		LangTraditionalChinese: "目前的 Agent 不支援會話封存。",
+		LangJapanese:           "このエージェントはセッションのアーカイブに対応していません。",
+		LangSpanish:            "Este agente no admite archivar sesiones.",
+	},
+	MsgArchiveNoSession: {
+		LangEnglish:            "There is no started agent session to archive.",
+		LangChinese:            "没有已启动的 Agent 会话可供归档。",
+		LangTraditionalChinese: "沒有已啟動的 Agent 會話可供封存。",
+		LangJapanese:           "アーカイブできる開始済みのセッションがありません。",
+		LangSpanish:            "No hay ninguna sesión iniciada del agente para archivar.",
+	},
+	MsgArchiveFailed: {
+		LangEnglish:            "Failed to archive the session: %v. The topic has been kept.",
+		LangChinese:            "归档会话失败：%v。话题已保留。",
+		LangTraditionalChinese: "封存會話失敗：%v。話題已保留。",
+		LangJapanese:           "セッションのアーカイブに失敗しました：%v。トピックは保持されています。",
+		LangSpanish:            "No se pudo archivar la sesión: %v. Se ha conservado el tema.",
+	},
+	MsgArchiveStopFailed: {
+		LangEnglish:            "The agent could not be stopped safely. The session was not archived and its topic has been kept.",
+		LangChinese:            "无法安全停止 Agent。会话未归档，话题已保留。",
+		LangTraditionalChinese: "無法安全停止 Agent。會話未封存，話題已保留。",
+		LangJapanese:           "エージェントを安全に停止できませんでした。セッションはアーカイブされず、トピックは保持されています。",
+		LangSpanish:            "No se pudo detener el agente de forma segura. La sesión no se ha archivado y se ha conservado su tema.",
+	},
+	MsgArchiveSuccess: {
+		LangEnglish:            "Session archived. Its history is preserved in the agent's archive.",
+		LangChinese:            "会话已归档，历史记录保存在 Agent 的归档中。",
+		LangTraditionalChinese: "會話已封存，歷史記錄保存在 Agent 的封存中。",
+		LangJapanese:           "セッションをアーカイブしました。履歴はエージェントのアーカイブに保存されています。",
+		LangSpanish:            "Sesión archivada. Su historial se conserva en el archivo del agente.",
+	},
+	MsgArchiveTopicFailed: {
+		LangEnglish:            "Session archived, but its topic could not be removed: %v. Check the bot's permissions and retry `/archive`.",
+		LangChinese:            "会话已归档，但无法删除话题：%v。请检查机器人的权限，然后重试 `/archive`。",
+		LangTraditionalChinese: "會話已封存，但無法刪除話題：%v。請檢查機器人的權限，然後重試 `/archive`。",
+		LangJapanese:           "セッションはアーカイブされましたが、トピックを削除できませんでした：%v。ボットの権限を確認し、`/archive` を再試行してください。",
+		LangSpanish:            "Sesión archivada, pero no se pudo eliminar su tema: %v. Comprueba los permisos del bot y vuelve a intentar `/archive`.",
+	},
+	MsgBuiltinCmdArchive: {
+		LangEnglish:            "Archive current session and remove its topic",
+		LangChinese:            "归档当前会话并删除话题",
+		LangTraditionalChinese: "封存目前的會話並刪除話題",
+		LangJapanese:           "現在のセッションをアーカイブしてトピックを削除",
+		LangSpanish:            "Archivar la sesión actual y eliminar su tema",
 	},
 	MsgDeleteUsage: {
 		LangEnglish:            "Usage: `/delete <number>` or `/delete 1,2,3` or `/delete 3-7` or `/delete 1,3-5,8`.\nUse `/list` to see session numbers.",

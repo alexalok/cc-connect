@@ -45,6 +45,7 @@ type telegramBot interface {
 	SendChatAction(ctx context.Context, params *tgbot.SendChatActionParams) (bool, error)
 	EditMessageText(ctx context.Context, params *tgbot.EditMessageTextParams) (*models.Message, error)
 	DeleteMessage(ctx context.Context, params *tgbot.DeleteMessageParams) (bool, error)
+	DeleteForumTopic(ctx context.Context, params *tgbot.DeleteForumTopicParams) (bool, error)
 	AnswerCallbackQuery(ctx context.Context, params *tgbot.AnswerCallbackQueryParams) (bool, error)
 	SetMyCommands(ctx context.Context, params *tgbot.SetMyCommandsParams) (bool, error)
 	GetFile(ctx context.Context, params *tgbot.GetFileParams) (*models.File, error)
@@ -111,6 +112,7 @@ type Platform struct {
 	shareSessionInChannel bool
 	enableReactions       bool
 	readReceipts          bool
+	buttonTextLimit       int
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
 	topicRouting          privateTopicRouting
@@ -186,6 +188,11 @@ func New(opts map[string]any) (core.Platform, error) {
 		readReceipts = v
 	}
 
+	buttonTextLimit, err := parseButtonTextLimit(opts)
+	if err != nil {
+		return nil, err
+	}
+
 	// Default to "compact" so streaming edits work out of the box. Telegram has
 	// no rich card UI, so "card" is normalized to "compact". Users can opt out
 	// via progress_style = "legacy" to restore the old "send full text once"
@@ -213,6 +220,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		shareSessionInChannel: shareSessionInChannel,
 		enableReactions:       enableReactions,
 		readReceipts:          readReceipts,
+		buttonTextLimit:       buttonTextLimit,
 		progressStyle:         progressStyle,
 		httpClient:            httpClient,
 		topicStatus:           status,
@@ -1342,6 +1350,7 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 
 	defer p.refreshTyping(rc)
 
+	content, html, buttons := p.prepareButtonLabels(content, buttons)
 	var rows [][]models.InlineKeyboardButton
 	for _, row := range buttons {
 		var btns []models.InlineKeyboardButton
@@ -1351,7 +1360,6 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 		rows = append(rows, btns)
 	}
 
-	html := core.MarkdownToSimpleHTML(content)
 	params := &tgbot.SendMessageParams{
 		ChatID:          rc.chatID,
 		MessageThreadID: rc.threadID,
@@ -1373,13 +1381,14 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 			params.Text = content
 			params.ParseMode = ""
 			_, err = bot.SendMessage(ctx, params)
-		} else if strings.Contains(errMsg, "message is too long") {
+		}
+		if err != nil && strings.Contains(err.Error(), "message is too long") {
 			// Handle message too long: first chunk with buttons, rest without
 			slog.Warn("telegram: message too long, splitting into chunks",
 				"method", "SendWithButtons",
 				"html_len", len(html),
 			)
-			return p.sendChunkedWithButtons(ctx, bot, rc, html, rows)
+			return p.sendChunkedWithButtons(ctx, bot, rc, content, rows)
 		}
 		if err != nil {
 			return fmt.Errorf("telegram: sendWithButtons: %w", err)
@@ -1620,32 +1629,22 @@ func (p *Platform) sendChunked(ctx context.Context, bot telegramBot, rc replyCon
 	return nil
 }
 
-// sendChunkedWithButtons splits a message that's too long and sends it as multiple messages.
-// The first chunk includes the inline keyboard buttons.
-func (p *Platform) sendChunkedWithButtons(ctx context.Context, bot telegramBot, rc replyContext, html string, rows [][]models.InlineKeyboardButton) error {
-	chunks := core.SplitMessageCodeFenceAware(html, telegramMaxMessageLen)
-	for i, chunk := range chunks {
+// sendChunkedWithButtons uses the original text for oversized button messages.
+// Splitting escaped HTML can break entities or tags, and a Markdown-aware split
+// can change literal option text. Keep the content verbatim and attach the
+// keyboard once, to the first chunk.
+func (p *Platform) sendChunkedWithButtons(ctx context.Context, bot telegramBot, rc replyContext, content string, rows [][]models.InlineKeyboardButton) error {
+	for i, chunk := range splitButtonMessage(content) {
 		params := &tgbot.SendMessageParams{
 			ChatID:          rc.chatID,
 			MessageThreadID: rc.threadID,
 			Text:            chunk,
-			ParseMode:       models.ParseModeHTML,
 		}
-		// Only first chunk gets the buttons
 		if i == 0 {
 			params.ReplyMarkup = &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 		}
 		if _, err := bot.SendMessage(ctx, params); err != nil {
-			// If HTML fails, try plain text
-			if strings.Contains(err.Error(), "can't parse") {
-				params.Text = chunk
-				params.ParseMode = ""
-				if _, err2 := bot.SendMessage(ctx, params); err2 != nil {
-					return fmt.Errorf("telegram: send chunk %d: %w", i, err2)
-				}
-			} else {
-				return fmt.Errorf("telegram: send chunk %d: %w", i, err)
-			}
+			return fmt.Errorf("telegram: send button chunk %d: %w", i, err)
 		}
 		p.refreshTyping(rc)
 	}
