@@ -3296,3 +3296,73 @@ func TestCUJ_I6_TopicStatusQuestionSurvivesCompletion(t *testing.T) {
 	send("/stop")
 	waitConversationStatus(t, p, ConversationStopped)
 }
+
+// CUJ: typing spans startup and tool work, follows a queued turn, and ends on /stop.
+func TestCUJ_A10_TypingPersistsAcrossStartupToolsAndQueue(t *testing.T) {
+	p := &typingPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	a := &receiptStartAgent{
+		session: &receiptAgentSession{queuingAgentSession: newQueuingSession("typing-cuj")},
+		entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	e := NewEngine("typing", a, []Platform{p}, t.TempDir()+"/sessions.json", LangEnglish)
+	e.display.ToolMessages = true
+	t.Cleanup(func() { _ = e.Stop() })
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	send := func(id, content string) {
+		e.ReceiveMessage(p, &Message{SessionKey: "test:typing-user", Platform: "test", UserID: "user", MessageID: id, Content: content, ReplyCtx: id})
+	}
+	awaitSend := func(n int) {
+		env.waitFor("agent send", time.Second, func() bool {
+			a.session.sendMu.Lock()
+			defer a.session.sendMu.Unlock()
+			return len(a.session.sendCalls) >= n
+		})
+	}
+
+	// User action 1: start a task; typing is already visible during startup.
+	send("first", "First task")
+	select {
+	case <-a.entered:
+	case <-time.After(time.Second):
+		t.Fatal("startup not reached")
+	}
+	if !p.isTyping("first") {
+		t.Fatal("typing missing during agent startup")
+	}
+	close(a.release)
+	awaitSend(1)
+	a.session.events <- Event{Type: EventThinking, Content: "Thinking"}
+	a.session.events <- Event{Type: EventText, Content: "Progress before tool"}
+	a.session.events <- Event{Type: EventToolUse, ToolName: "shell", ToolInput: "pwd"}
+	a.session.events <- Event{Type: EventToolResult, ToolName: "shell", Content: "done"}
+	a.session.events <- Event{Type: EventResult, Done: false}
+	a.session.events <- Event{Type: EventText, Content: "First answer"}
+	env.waitFor("tool progress", time.Second, func() bool {
+		return strings.Contains(strings.Join(p.getSent(), "\n"), "Progress before tool")
+	})
+	p.assertDeliveredWhileTyping(t, "Progress before tool", true)
+
+	// User action 2: queue a follow-up while generation is still in progress.
+	send("second", "Follow-up task")
+	env.waitFor("queue notice", time.Second, func() bool {
+		return strings.Contains(strings.Join(p.getSent(), "\n"), e.i18n.T(MsgMessageQueued))
+	})
+	if !p.isTyping("first") {
+		t.Fatal("non-terminal result stopped typing")
+	}
+	a.session.events <- Event{Type: EventResult, Content: "First answer", Done: true}
+	awaitSend(2)
+	p.assertDeliveredWhileTyping(t, "First answer", false)
+	if p.isTyping("first") || !p.isTyping("second") {
+		t.Fatal("typing did not move to queued turn")
+	}
+
+	// User action 3: cancel the running follow-up.
+	send("stop", "/stop")
+	env.waitFor("typing stopped", time.Second, func() bool { return !p.isTyping("second") })
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stops != 2 {
+		t.Fatalf("typing stopped %d times, want 2 completed turns", p.stops)
+	}
+}

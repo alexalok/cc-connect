@@ -2,6 +2,8 @@
 
 This guide walks you through connecting **cc-connect** to Telegram, so you can chat with your local Claude Code via a Telegram bot.
 
+The native **typing…** indicator stays active during agent startup, thinking, and tool use. It refreshes every three seconds and after progress messages, resumes after temporary connection failures, and stops when the turn completes or is cancelled. This works independently for each chat topic and requires no configuration.
+
 ## Prerequisites
 
 - A Telegram account
