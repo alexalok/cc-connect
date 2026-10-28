@@ -12,6 +12,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/chenhg5/cc-connect/core"
+	tgbot "github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 )
 
 func TestTurnCardProgressAndAnswerShareMessage(t *testing.T) {
@@ -202,5 +204,150 @@ func TestCollapseProgressOptions(t *testing.T) {
 	p := &Platform{}
 	if card, err := p.CreateStreamingCard(context.Background(), nil); err != nil || card != nil {
 		t.Fatal("unconfigured platform opted into combined turns")
+	}
+}
+
+type rateLimitedTurnBot struct {
+	telegramBot
+	rejected bool
+	calls    int
+}
+
+func (b *rateLimitedTurnBot) SendMessage(ctx context.Context, params *tgbot.SendMessageParams) (*models.Message, error) {
+	b.calls++
+	if b.rejected {
+		return nil, &tgbot.TooManyRequestsError{Message: "Too Many Requests", RetryAfter: 30}
+	}
+	return b.telegramBot.SendMessage(ctx, params)
+}
+
+func TestTurnCardRateLimitRejectionAllowsFinalDelivery(t *testing.T) {
+	for _, regular := range []bool{false, true} {
+		for _, deadline := range []bool{false, true} {
+			t.Run(fmt.Sprintf("regular=%v/deadline=%v", regular, deadline), func(t *testing.T) {
+				original := sleepCtx
+				t.Cleanup(func() { sleepCtx = original })
+				sleepCtx = func(context.Context, time.Duration) error {
+					if deadline {
+						return context.DeadlineExceeded
+					}
+					return nil
+				}
+				rejected, calls := true, 0
+				p, bot := richTestPlatform(t, func(*http.Request) (*http.Response, error) {
+					calls++
+					if rejected {
+						return richResponse(429, `{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":30}}`), nil
+					}
+					return richResponse(200, `{"ok":true,"result":{"message_id":123}}`), nil
+				})
+				limited := &rateLimitedTurnBot{telegramBot: bot, rejected: true}
+				p.bot = limited
+				c := &turnCard{p: p, regular: regular, rc: replyContext{chatID: 42}}
+				err := c.AppendProgress(context.Background(), core.ProgressCardEntry{Kind: core.ProgressEntryThinking, Text: "Working"})
+				if err == nil || errors.Is(err, core.ErrDeliveryUncertain) {
+					t.Fatalf("an explicit rejection must remain retryable, got %v", err)
+				}
+				rejected, limited.rejected = false, false
+				if err := c.Finalize(context.Background(), "Final answer"); err != nil {
+					t.Fatal(err)
+				}
+				wantCalls := rateLimitMaxAttempts + 1
+				if deadline {
+					wantCalls = 2
+				}
+				if regular {
+					if limited.calls != wantCalls || len(bot.sends) != 1 || !strings.HasSuffix(bot.sends[0].Text, "Final answer") {
+						t.Fatalf("final delivery missing after %d calls: %+v", limited.calls, bot.sends)
+					}
+				} else if calls != wantCalls || len(c.pages) != 1 || !strings.HasSuffix(c.pages[0].text, "Final answer") {
+					t.Fatalf("final delivery missing after %d calls: %+v", calls, c.pages)
+				}
+			})
+		}
+	}
+}
+
+func TestTurnCardFlushesThrottledUpdatesWithoutAnotherEvent(t *testing.T) {
+	for _, answer := range []bool{false, true} {
+		t.Run(fmt.Sprintf("answer=%v", answer), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			requests := make(chan richMessageParams, 4)
+			p, _ := richTestPlatform(t, func(req *http.Request) (*http.Response, error) {
+				var body richMessageParams
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					return nil, err
+				}
+				requests <- body
+				return richResponse(200, `{"ok":true,"result":{"message_id":88}}`), nil
+			})
+			c := &turnCard{p: p, rc: replyContext{chatID: 42}}
+			if err := c.AppendProgress(ctx, core.ProgressCardEntry{Kind: core.ProgressEntryThinking, Text: "Initial summary"}); err != nil {
+				t.Fatal(err)
+			}
+			<-requests
+			if err := c.AppendProgress(ctx, core.ProgressCardEntry{Kind: core.ProgressEntryThinking, Text: "Latest summary"}); err != nil {
+				t.Fatal(err)
+			}
+			if answer {
+				if err := c.Update(ctx, "Explanation before permission"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case body := <-requests:
+				if body.MessageID != 88 || !strings.Contains(body.RichMessage.Markdown, "Latest summary") ||
+					(answer && !strings.HasSuffix(body.RichMessage.Markdown, "Explanation before permission")) {
+					t.Fatalf("latest content was not flushed into the same message: %+v", body)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("throttled update remained invisible without a subsequent event")
+			}
+			if err := c.Finalize(ctx, "Done"); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestTurnCardTrailingFlushStopsAfterFinalizeOrCancellation(t *testing.T) {
+	for _, finalize := range []bool{false, true} {
+		t.Run(fmt.Sprintf("finalize=%v", finalize), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			requests := make(chan string, 4)
+			p, _ := richTestPlatform(t, func(req *http.Request) (*http.Response, error) {
+				var body richMessageParams
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					return nil, err
+				}
+				requests <- body.RichMessage.Markdown
+				return richResponse(200, `{"ok":true,"result":{"message_id":88}}`), nil
+			})
+			c := &turnCard{p: p, rc: replyContext{chatID: 42}}
+			if err := c.Update(ctx, "Initial answer"); err != nil {
+				t.Fatal(err)
+			}
+			<-requests
+			if err := c.Update(ctx, "Pending answer"); err != nil {
+				t.Fatal(err)
+			}
+			if finalize {
+				if err := c.Finalize(ctx, "Final answer"); err != nil {
+					t.Fatal(err)
+				}
+				if text := <-requests; text != "Final answer" {
+					t.Fatalf("final text = %q", text)
+				}
+			} else {
+				cancel()
+			}
+			select {
+			case text := <-requests:
+				t.Fatalf("stale flush after finalization or cancellation: %q", text)
+			case <-time.After(1200 * time.Millisecond):
+			}
+		})
 	}
 }

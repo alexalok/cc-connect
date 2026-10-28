@@ -102,3 +102,61 @@ func TestProgressStreamingCardPublicSummariesAndFinalAnswer(t *testing.T) {
 		})
 	}
 }
+
+func TestProgressStreamingCardPreservesReplyFooter(t *testing.T) {
+	for _, mode := range []string{"standard", "cached", "disabled", "silent", "fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			workDir := t.TempDir()
+			agent := &stubReplyFooterAgent{stubModelModeAgent: stubModelModeAgent{model: "test-model"}, workDir: workDir}
+			p := &progressStreamPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+			if mode == "fallback" {
+				p.finalErr = errors.New("definite rejection")
+			}
+			e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+			e.SetReplyFooterEnabled(mode != "disabled")
+			e.SetShowContextIndicator(true)
+			e.SetShowWorkdirIndicator(true)
+			key := "test:progress-footer"
+			session := e.sessions.GetOrCreateActive(key)
+			as := newControllableSession("progress-footer")
+			if mode == "cached" {
+				as.contextUsage = &ContextUsage{InputTokens: 100, CachedInputTokens: 1000, OutputTokens: 20, UsedTokens: 1100, ContextWindow: 10000}
+			}
+			state := &interactiveState{agentSession: as, platform: p, replyCtx: "ctx", agent: agent, workspaceDir: workDir}
+			e.interactiveStates[key] = state
+			as.events <- Event{Type: EventThinking, Content: "Public summary", PublicSummary: true}
+			answer := "Visible answer"
+			if mode == "silent" {
+				answer = "NO_REPLY"
+			}
+			as.events <- Event{Type: EventResult, Content: answer, InputTokens: 28000, Done: true}
+			e.processInteractiveEvents(state, session, e.sessions, key, "message", time.Now(), nil, nil, state.replyCtx, 0)
+			sent := p.getSent()
+			wantMessages := 1
+			if mode == "fallback" {
+				wantMessages = 2
+			}
+			if len(sent) != wantMessages {
+				t.Fatalf("sent = %#v", sent)
+			}
+			final := sent[len(sent)-1]
+			if mode == "disabled" || mode == "silent" {
+				if strings.Contains(final, "test-model") || strings.Contains(final, "NO_REPLY") {
+					t.Fatalf("unexpected footer/marker: %q", final)
+				}
+				return
+			}
+			for _, want := range []string{"Visible answer\n\n*", "test-model", compactReplyFooterPath(workDir)} {
+				if !strings.Contains(final, want) {
+					t.Fatalf("final reply lost %q: %q", want, final)
+				}
+			}
+			if mode != "fallback" && !strings.Contains(final, "</progress>Visible answer") {
+				t.Fatalf("footer/answer escaped progress boundary: %q", final)
+			}
+			if strings.Count(final, "test-model") != 1 {
+				t.Fatalf("duplicate footer: %q", final)
+			}
+		})
+	}
+}

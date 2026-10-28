@@ -6572,6 +6572,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				cardBody := fullResponse
 				if isSilent {
 					cardBody = strings.TrimRight(cardAnswerText.String(), " \t\r\n")
+				} else if _, ok := streamCard.(ProgressStreamingCard); ok {
+					cardBody = appendReplyFooter(cardBody, statusFooter)
 				}
 				finalContent := cardContent(cardBody)
 				if err := streamCard.Finalize(e.ctx, finalContent); err != nil {
@@ -6579,7 +6581,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					// Fallback: send the response as a normal message — but never
 					// for a silent reply, which has no deliverable content.
 					if !isSilent && !errors.Is(err, ErrDeliveryUncertain) {
-						for _, chunk := range SplitMessageCodeFenceAware(fullResponse, maxPlatformMessageLen) {
+						for _, chunk := range SplitMessageCodeFenceAware(cardBody, maxPlatformMessageLen) {
 							if err := sendWorkspaceWithError(p, replyCtx, chunk); err != nil {
 								return
 							}

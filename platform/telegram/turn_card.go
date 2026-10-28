@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +62,7 @@ type turnCard struct {
 	answer    string
 	pages     []turnCardPage
 	last      time.Time
+	pending   *time.Timer
 	regular   bool
 	finished  bool
 	uncertain error
@@ -261,12 +263,21 @@ func (c *turnCard) renderPages() []string {
 var errTurnRegularFallback = errors.New("use regular turn formatting")
 
 func (c *turnCard) flush(ctx context.Context, final bool) error {
+	if final {
+		c.cancelPendingFlush()
+	}
 	if c.uncertain != nil {
 		return c.uncertain
 	}
-	if !final && time.Since(c.last) < time.Second {
+	if err := ctx.Err(); err != nil {
+		c.cancelPendingFlush()
+		return err
+	}
+	if remaining := time.Second - time.Since(c.last); !final && remaining > 0 {
+		c.scheduleFlush(ctx, remaining)
 		return nil
 	}
+	c.cancelPendingFlush()
 	c.last = time.Now()
 	pages := c.renderPages()
 	if !final && len(pages) > 1 {
@@ -287,6 +298,37 @@ func (c *turnCard) flush(ctx context.Context, final bool) error {
 		}
 	}
 	return nil
+}
+
+// Called with c.mu held. Coalesce updates into one trailing write so a tool
+// or permission wait cannot leave the latest public progress hidden indefinitely.
+func (c *turnCard) scheduleFlush(ctx context.Context, delay time.Duration) {
+	if c.pending != nil {
+		return
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.pending != timer {
+			return // A finalization or newer write canceled this callback.
+		}
+		c.pending = nil
+		if c.finished || ctx.Err() != nil {
+			return
+		}
+		if err := c.flush(ctx, false); err != nil {
+			slog.Warn("telegram: trailing turn update failed", "error", err)
+		}
+	})
+	c.pending = timer
+}
+
+func (c *turnCard) cancelPendingFlush() {
+	if c.pending != nil {
+		c.pending.Stop()
+		c.pending = nil
+	}
 }
 
 func (c *turnCard) writePage(ctx context.Context, index int, text string) error {
@@ -324,6 +366,13 @@ func (c *turnCard) writePage(ctx context.Context, index int, text string) error 
 		err = errors.New("turn response missing message ID")
 	}
 	if err != nil {
+		var rateLimit *tgbot.TooManyRequestsError
+		if errors.As(err, &rateLimit) {
+			// A 429 confirms that nothing was delivered. A later event or
+			// finalization must be allowed to retry even if this retry budget
+			// or request deadline was exhausted.
+			return fmt.Errorf("telegram: turn rate limited: %s", core.RedactToken(err.Error(), c.p.token))
+		}
 		if page.id == 0 {
 			// A failed send has no safe edit target. Do not duplicate it by
 			// sending another message on a subsequent event or finalization.
