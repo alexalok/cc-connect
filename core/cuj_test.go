@@ -3431,3 +3431,37 @@ func TestCUJ_I6_TopicStatusQuestionSurvivesCompletion(t *testing.T) {
 	send("/stop")
 	waitConversationStatus(t, p, ConversationStopped)
 }
+
+func TestCUJ_A11_RecallCancelsDeferredInput(t *testing.T) {
+	for _, payload := range []string{"/queue recalled task", "recalled adjustment"} {
+		t.Run(payload, func(t *testing.T) {
+			env, s := newOrderedDispatchEnv(t)
+			env.send("first", "first task", 1000)
+			env.awaitSends(1)
+			env.send("steer", "adjustment", 2000)
+			attempt := awaitSteerAttempt(t, s, "steer")
+			env.send("recalled", payload, 3000)
+			env.send("kept", "/queue kept task", 4000)
+			beforeRecall := len(env.plat.getSent())
+			responsiveDispatch(t, func() {
+				env.engine.ReceiveMessage(env.plat, &Message{Platform: "test", MessageID: "recalled", Recalled: true})
+			})
+			if len(env.plat.getSent()) != beforeRecall {
+				t.Fatal("recall should silently remove the waiting message")
+			}
+			attempt.ack <- true
+			env.awaitVisible("receipt:kept")
+			env.assertReceipts("first", "steer", "kept")
+			env.finish("first done")
+			env.awaitSends(2)
+			env.session.mu.Lock()
+			last := env.session.sent[1]
+			env.session.mu.Unlock()
+			if last != "kept task" {
+				t.Fatalf("recalled input reached the agent: %q", last)
+			}
+			env.assertCalls(2, 1)
+			env.finish("kept done")
+		})
+	}
+}

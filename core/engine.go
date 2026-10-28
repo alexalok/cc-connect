@@ -625,6 +625,7 @@ type interactiveState struct {
 	lastSteeredUserMessageTimeMs int64
 	steeringTail                 <-chan struct{} // serializes native steering without blocking platform input
 	pendingSteering              int
+	deferredMessages             map[*Message]bool // true when recalled before dispatch; protected by mu
 }
 
 // latestUserMessageWatermarkLocked returns the highest UserMessageTimeMs among
@@ -2677,12 +2678,14 @@ func (e *Engine) removeQueuedMessageByID(messageID string) (string, bool) {
 		}
 		state.mu.Lock()
 		pending := state.pendingMessages
-		if len(pending) == 0 {
-			state.mu.Unlock()
-			continue
-		}
 		filtered := pending[:0]
 		removed := false
+		for msg := range state.deferredMessages {
+			if msg.MessageID == messageID {
+				state.deferredMessages[msg] = true
+				removed = true
+			}
+		}
 		for _, queued := range pending {
 			if queued.messageID == messageID {
 				removed = true
@@ -3358,6 +3361,10 @@ sessionLocked:
 	// instead of dropped (issue #565). This is still needed after idle auto-
 	// reset because cleanupInteractiveState may remove the early placeholder.
 	e.ensureInteractiveStateForQueueing(interactiveKey, p, msg.ReplyCtx, session)
+	if !e.claimDeferredTurn(interactiveKey, msg) {
+		session.Unlock(lockGen)
+		return
+	}
 	e.noteUserMessageAccepted(interactiveKey, msg.UserMessageTimeMs)
 	runMessageAccepted(msg)
 	slog.Debug("user message accepted for processing",
@@ -3485,6 +3492,13 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 	state.mu.Lock()
 	e.interactiveMu.Unlock()
 	defer state.mu.Unlock()
+
+	// Transfer recall ownership from the dispatcher to pendingMessages while
+	// holding the same mutex used by recall, so no instruction falls in a gap.
+	if state.deferredMessages[msg] {
+		return true
+	}
+	delete(state.deferredMessages, msg)
 
 	if state.startFailureMsg == MsgSessionResumePreserved || state.startFailureMsg == MsgSessionResumeBlocked {
 		// A failed strict resume is no longer starting up: do not accept

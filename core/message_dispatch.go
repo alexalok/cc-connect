@@ -75,12 +75,17 @@ func (e *Engine) deferBusyMessage(p Platform, msg *Message, sessions *SessionMan
 	done := make(chan struct{})
 	state.steeringTail = done
 	state.pendingSteering++
+	if state.deferredMessages == nil {
+		state.deferredMessages = make(map[*Message]bool)
+	}
+	state.deferredMessages[msg] = false
 	messageID := state.currentMessageID
 	state.mu.Unlock()
 	stoppedSignal := state.stopSignal()
 	go func() {
 		defer func() {
 			state.mu.Lock()
+			delete(state.deferredMessages, msg)
 			state.pendingSteering--
 			if state.steeringTail == done {
 				state.steeringTail = nil
@@ -105,10 +110,11 @@ func (e *Engine) deferBusyMessage(p Platform, msg *Message, sessions *SessionMan
 		current := e.interactiveStates[key] == state
 		state.mu.Lock()
 		stopped := state.stopped
+		recalled := state.deferredMessages[msg]
 		sameTurn := state.currentMessageID == messageID
 		state.mu.Unlock()
 		e.interactiveMu.Unlock()
-		if e.ctx.Err() != nil {
+		if e.ctx.Err() != nil || recalled {
 			return
 		}
 		if !current || stopped || !as.Alive() || sessions.ActiveSessionID(msg.SessionKey) != session.ID || session.IsArchived() || session.isArchiving() {
@@ -123,6 +129,27 @@ func (e *Engine) deferBusyMessage(p Platform, msg *Message, sessions *SessionMan
 	return true
 }
 
+// claimDeferredTurn transfers recall ownership to the active message before
+// the foreground goroutine starts. Recall can then stop its startup as usual.
+func (e *Engine) claimDeferredTurn(key string, msg *Message) bool {
+	e.interactiveMu.Lock()
+	defer e.interactiveMu.Unlock()
+	state := e.interactiveStates[key]
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if recalled, deferred := state.deferredMessages[msg]; deferred {
+		delete(state.deferredMessages, msg)
+		if recalled {
+			return false
+		}
+		state.currentMessageID = msg.MessageID
+	}
+	return true
+}
+
 // steerBusyMessage returns false only when no input was delivered, allowing
 // the regular queue path. It runs in the ordered background dispatcher.
 func (e *Engine) steerBusyMessage(p Platform, msg *Message, session *Session, sessions *SessionManager, key string) bool {
@@ -133,6 +160,10 @@ func (e *Engine) steerBusyMessage(p Platform, msg *Message, session *Session, se
 		return false
 	}
 	state.mu.Lock()
+	if state.deferredMessages[msg] {
+		state.mu.Unlock()
+		return true
+	}
 	as := state.agentSession
 	stopped := state.stopped
 	state.mu.Unlock()
