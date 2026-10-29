@@ -225,6 +225,7 @@ const (
 	MsgSessionNotFound           MsgKey = "session_not_found"
 	MsgFailedToStartAgentSession MsgKey = "failed_to_start_agent_session"
 	MsgTopicOpenerAmbiguous      MsgKey = "topic_opener_ambiguous"
+	MsgGeneralTopicFailed        MsgKey = "general_topic_failed"
 	MsgFailedToDeleteSession     MsgKey = "failed_to_delete_session"
 	MsgEmptyResponse             MsgKey = "empty_response"
 	MsgPermissionPrompt          MsgKey = "permission_prompt"
@@ -725,6 +726,13 @@ const (
 )
 
 var messages = map[MsgKey]map[Language]string{
+	MsgGeneralTopicFailed: {
+		LangEnglish:            "I couldn't start this conversation in a new topic, so I haven't processed your message. Please try again or send it inside a topic.",
+		LangChinese:            "无法在新话题中开始对话，因此尚未处理你的消息。请重试，或在话题内发送消息。",
+		LangTraditionalChinese: "無法在新話題中開始對話，因此尚未處理你的訊息。請重試，或在話題內傳送訊息。",
+		LangJapanese:           "新しいトピックで会話を開始できなかったため、メッセージを処理していません。再試行するか、トピック内で送信してください。",
+		LangSpanish:            "No pude iniciar esta conversación en un tema nuevo, así que no he procesado tu mensaje. Inténtalo de nuevo o envíalo dentro de un tema.",
+	},
 	MsgTopicOpenerAmbiguous: {
 		LangEnglish:            "I couldn't determine which topic this message belongs to, so I haven't processed it. Please resend it inside the intended topic.",
 		LangChinese:            "无法确定这条消息属于哪个话题，因此尚未处理。请在目标话题内重新发送。",

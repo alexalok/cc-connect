@@ -385,6 +385,28 @@ topic_sync_interval_seconds = 10
 group_reply_all = true # Optional: accept ordinary messages without @mention
 ```
 
+To start a new conversation from the supergroup's **General** chat, also set:
+
+```toml
+general_topic_auto_create = true
+```
+
+This option defaults to `false` and requires a supergroup `topic_sync_chat_id`.
+Each accepted ordinary General message creates a topic named from its text or
+caption (up to 128 characters), copies the opener into it, and starts the agent
+conversation there. Photos, documents, voice/audio, and locations are supported;
+messages in one media album use the same topic. Copies retain their content,
+but appear as bot messages. The originals stay in General, and delivery
+reactions still mark the originals. Continue the conversation inside its topic;
+another ordinary General message starts another conversation.
+
+Slash commands remain in General. Existing topics and other chats keep their
+routing. `allow_from` and `group_reply_all` still apply before topic creation.
+If creation or copying fails, cc-connect reports the failure without starting
+an agent turn in General. A failed copy can leave an empty topic. Duplicate
+updates and album links are remembered for up to ten minutes while the bridge
+is running; accepted conversations use the normal persistent session store.
+
 Private topic mode in BotFather is not required for a supergroup. Before
 creating a topic, cc-connect verifies that Topics are enabled and the bot
 has the required administrator permission. Basic groups, channels, and

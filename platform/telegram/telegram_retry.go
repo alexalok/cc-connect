@@ -108,3 +108,13 @@ func retryOnRateLimit[T any](ctx context.Context, method string, call func() (T,
 		}
 	}
 }
+
+func (b *rateLimitRetryBot) CopyMessage(ctx context.Context, params *tgbot.CopyMessageParams) (*models.MessageID, error) {
+	copier, ok := b.telegramBot.(topicMessageCopier)
+	if !ok {
+		return nil, core.ErrNotSupported
+	}
+	return retryOnRateLimit(ctx, "copyMessage", func() (*models.MessageID, error) {
+		return copier.CopyMessage(ctx, params)
+	})
+}

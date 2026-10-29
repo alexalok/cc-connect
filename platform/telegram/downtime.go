@@ -320,3 +320,11 @@ func (p *Platform) discardLateDowntimeUpdate(ctx context.Context, update *models
 	}
 	return false
 }
+
+func (b *startupBot) CopyMessage(ctx context.Context, params *tgbot.CopyMessageParams) (*models.MessageID, error) {
+	copier, ok := b.telegramBot.(topicMessageCopier)
+	if !ok {
+		return nil, core.ErrNotSupported
+	}
+	return copier.CopyMessage(ctx, params)
+}
