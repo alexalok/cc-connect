@@ -38,6 +38,10 @@ go test ./...
 - Update docs or examples when behavior or configuration changes.
 - If you are fixing an issue, link it in the PR body with `Closes #<number>` when appropriate.
 
+### Fork workflow
+
+When working from a fork, keep the fork's `main` branch aligned with upstream and create feature branches from it. Open pull requests against the upstream `main` branch. For local installation or source-based testing, use the fork's `main` branch as the installation source (rather than a feature branch).
+
 ## Release Cadence
 
 - Beta / pre-release: roughly every 2 to 3 days
@@ -93,6 +97,10 @@ go test ./...
 - 如果包含 breaking change，请在 PR 描述中明确说明。
 - 如果改动影响行为或配置，请同步更新文档或示例。
 - 如果是在修复 issue，适合时请在 PR 描述中使用 `Closes #<编号>` 关联。
+
+### Fork 工作流
+
+如果从 fork 开始开发，请保持 fork 的 `main` 分支与上游同步，并从该分支创建功能分支。Pull request 统一提交到上游的 `main` 分支。进行本地安装或基于源码测试时，使用 fork 的 `main` 分支作为安装来源，不要直接从功能分支安装。
 
 ## 发版节奏
 
