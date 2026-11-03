@@ -253,6 +253,9 @@ func appServerListenURL(url string) string {
 }
 
 func (s *appServerSession) connect() error {
+	if strings.HasPrefix(s.url, "unix://") {
+		return s.connectUnixSocket(strings.TrimPrefix(s.url, "unix://"))
+	}
 	args := []string{"app-server"}
 	// With url "stdio://" the session speaks JSON-RPC over the stdio pipes.
 	// Pass no --listen flag in that case: on codex 0.152+ a --listen value
@@ -604,6 +607,9 @@ func (s *appServerSession) handleServerRequest(probe map[string]json.RawMessage)
 		return
 	}
 	params := probe["params"]
+	if s.isOtherSharedThread(params) {
+		return
+	}
 
 	switch method {
 	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
@@ -1131,6 +1137,10 @@ func (s *appServerSession) handleResponse(resp rpcResponseEnvelope) {
 }
 
 func (s *appServerSession) handleNotification(method string, paramsRaw json.RawMessage) {
+	if s.isOtherSharedThread(paramsRaw) {
+		return
+	}
+
 	switch method {
 	case "turn/started":
 		var notif turnNotification
