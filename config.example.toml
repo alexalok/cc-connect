@@ -1242,6 +1242,10 @@ app_secret = "your-feishu-app-secret"
 #                                 # Mirrors user/assistant text; Codex backend = "app_server" is required.
 #                                 # 可选：为新建的外部 Codex 会话同步话题，自动识别私聊用户 ID 或超级群组 ID。
 #                                 # 群组须开启话题并授予机器人管理员和管理话题权限；每个话题由允许的用户共享。
+# general_topic_auto_create = false # Create a topic for each ordinary General message in the configured supergroup.
+#                                   # Requires a negative topic_sync_chat_id; originals stay in General, replies use the topic.
+#                                   # Albums share a topic; slash commands stay in General. Default: false.
+#                                   # 为指定超级群组中 General 的普通消息新建话题；相册共用话题，命令留在 General。
 # topic_sync_interval_seconds = 10 # Poll every 1–3600 seconds; default 10. / 轮询间隔，默认 10 秒。
 # proxy = "http://127.0.0.1:7890"  # Optional HTTP/SOCKS5 proxy for Telegram Bot API / 可选 HTTP/SOCKS5 代理
 # proxy_username = ""              # Optional proxy auth username / 代理用户名

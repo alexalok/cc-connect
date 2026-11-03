@@ -2180,6 +2180,7 @@ func TestCUJ_B10_ResetOnIdle_LinkedToEngineTest(t *testing.T) {
 
 // CUJ-B11 · Same user in private chat vs group chat: sessions isolated.
 func TestCUJ_B11_PrivateVsGroupSessionsIsolated(t *testing.T) {
+	t.Run("NewTopicsKeepSeparateHistory", testCUJNewTopicHistory)
 	env := newCUJEnv(t)
 
 	// Simulate private chat with sessionKey "test:priv:userX"
@@ -3680,5 +3681,45 @@ func TestCUJ_A10_TypingPersistsAcrossStartupToolsAndQueue(t *testing.T) {
 	defer p.mu.Unlock()
 	if p.stops != 2 {
 		t.Fatalf("typing stopped %d times, want 2 completed turns", p.stops)
+	}
+}
+
+// The platform supplies a new topic destination before ReceiveMessage. The
+// engine must preserve each conversation when users return to earlier topics.
+func testCUJNewTopicHistory(t *testing.T) {
+	env := newCUJEnv(t)
+	t.Cleanup(func() { _ = env.engine.Stop() })
+	send := func(topic, user, content string) {
+		env.plat.clearSent()
+		env.engine.ReceiveMessage(env.plat, &Message{
+			SessionKey: "test:group:" + topic, Platform: "test", UserID: user,
+			MessageID: topic + ":" + content, Content: content, ReplyCtx: topic,
+		})
+	}
+	finish := func(topic string) {
+		t.Helper()
+		env.waitFor("topic reply", 3*time.Second, func() bool {
+			return env.sentContains("ok") && !env.activeSession("test:group:"+topic).Busy()
+		})
+	}
+	// Two separate General openers arrive at the new destinations chosen by
+	// the platform, then a second allowed user follows up in the first topic.
+	send("topic-one", "alice", "first project question")
+	finish("topic-one")
+	send("topic-two", "alice", "second project question")
+	finish("topic-two")
+	send("topic-one", "bob", "follow up on first project")
+	finish("topic-one")
+	send("topic-one", "alice", "/history")
+	if !env.sentContains("first project question") || !env.sentContains("follow up on first project") || env.sentContains("second project question") {
+		t.Fatalf("first topic lost or mixed history: %v", env.plat.getSent())
+	}
+	send("topic-two", "alice", "/history")
+	if !env.sentContains("second project question") || env.sentContains("first project") {
+		t.Fatalf("second topic lost or mixed history: %v", env.plat.getSent())
+	}
+	send("general", "alice", "/history")
+	if env.sentContains("project question") || env.sentContains("follow up") {
+		t.Fatalf("topic conversation appeared in General: %v", env.plat.getSent())
 	}
 }

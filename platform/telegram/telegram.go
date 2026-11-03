@@ -120,6 +120,8 @@ type Platform struct {
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
 	topicRouting          privateTopicRouting
+	autoGeneralTopics     bool
+	generalTopicRouting   generalTopicRouting
 	topicSyncChatID       int64
 	topicSyncInterval     time.Duration
 	i18n                  *core.I18n
@@ -157,6 +159,11 @@ func New(opts map[string]any) (core.Platform, error) {
 	allowFrom, _ := opts["allow_from"].(string)
 	core.CheckAllowFrom("telegram", allowFrom)
 	topicChatID, topicInterval, err := parseTopicSyncOptions(opts, allowFrom)
+	if err != nil {
+		return nil, err
+	}
+
+	generalTopics, err := parseGeneralTopicOption(opts, topicChatID)
 	if err != nil {
 		return nil, err
 	}
@@ -228,6 +235,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		allowFrom:             allowFrom,
 		topicSyncChatID:       topicChatID,
 		topicSyncInterval:     topicInterval,
+		autoGeneralTopics:     generalTopics,
 		groupReplyAll:         groupReplyAll,
 		shareSessionInChannel: shareSessionInChannel,
 		enableReactions:       enableReactions,
@@ -520,7 +528,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 			return
 		}
 		caption := stripBotMention(msg.Caption, botName)
-		p.dispatchMessage(&core.Message{
+		p.dispatchMessage(ctx, &core.Message{
 			SessionKey: sessionKey, Platform: "telegram",
 			UserID: userID, UserName: userName, ChatName: chatName,
 			Content:    caption,
@@ -539,7 +547,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 			slog.Error("telegram: download voice failed", "error", err)
 			return
 		}
-		p.dispatchMessage(&core.Message{
+		p.dispatchMessage(ctx, &core.Message{
 			SessionKey: sessionKey, Platform: "telegram",
 			UserID: userID, UserName: userName, ChatName: chatName,
 			MessageID:  strconv.Itoa(msg.ID),
@@ -569,7 +577,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 				format = parts[1]
 			}
 		}
-		p.dispatchMessage(&core.Message{
+		p.dispatchMessage(ctx, &core.Message{
 			SessionKey: sessionKey, Platform: "telegram",
 			UserID: userID, UserName: userName, ChatName: chatName,
 			MessageID:  strconv.Itoa(msg.ID),
@@ -593,7 +601,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 			return
 		}
 		caption := stripBotMention(msg.Caption, botName)
-		p.dispatchMessage(&core.Message{
+		p.dispatchMessage(ctx, &core.Message{
 			SessionKey: sessionKey, Platform: "telegram",
 			UserID: userID, UserName: userName, ChatName: chatName,
 			Content:    caption,
@@ -607,7 +615,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 
 	if msg.Location != nil {
 		slog.Info("telegram: location received", "user", userName, "latitude", msg.Location.Latitude, "longitude", msg.Location.Longitude)
-		p.dispatchMessage(&core.Message{
+		p.dispatchMessage(ctx, &core.Message{
 			SessionKey: sessionKey, Platform: "telegram",
 			UserID: userID, UserName: userName, ChatName: chatName,
 			MessageID:  strconv.Itoa(msg.ID),
@@ -630,7 +638,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 
 	text := stripBotMention(msg.Text, botName)
 	slog.Debug("telegram: message received", "user", userName, "chat", msg.Chat.ID)
-	p.dispatchMessage(&core.Message{
+	p.dispatchMessage(ctx, &core.Message{
 		SessionKey: sessionKey, Platform: "telegram",
 		UserID: userID, UserName: userName, ChatName: chatName,
 		Content:    text,
@@ -640,7 +648,11 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 	}, msg)
 }
 
-func (p *Platform) dispatchMessage(msg *core.Message, tgMsg *models.Message) {
+func (p *Platform) dispatchMessage(ctx context.Context, msg *core.Message, tgMsg *models.Message) {
+	handler := p.messageHandler()
+	if handler == nil || !p.routeGeneralTopicMessage(ctx, msg, tgMsg) {
+		return
+	}
 	if p.readReceipts {
 		msg.OnDelivered = p.readReceipt(tgMsg.Chat.ID, tgMsg.ID)
 	}
@@ -662,10 +674,6 @@ func (p *Platform) dispatchMessage(msg *core.Message, tgMsg *models.Message) {
 		msg.ExtraContent = strings.Join(extras, "\n")
 	}
 
-	handler := p.messageHandler()
-	if handler == nil {
-		return
-	}
 	handler(p, msg)
 }
 

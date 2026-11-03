@@ -44,7 +44,7 @@ func TestReadReceipts_DefaultAndOptOut(t *testing.T) {
 				t.Fatalf("receipt callback, disabled=%v", disabled)
 			}
 		}
-		p.dispatchMessage(&core.Message{}, &models.Message{ID: 42, Chat: models.Chat{ID: 17}})
+		p.dispatchMessage(context.Background(), &core.Message{}, &models.Message{ID: 42, Chat: models.Chat{ID: 17}})
 	}
 }
 
