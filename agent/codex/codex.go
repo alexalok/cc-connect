@@ -87,6 +87,12 @@ func New(opts map[string]any) (core.Agent, error) {
 		}
 	}
 	shared := backend == "app_server" && strings.HasPrefix(appServerURL, "unix://")
+	if shared && mode != "inherit" {
+		return nil, fmt.Errorf("codex shared server requires mode = \"inherit\": approval and sandbox policies are controlled by the native server")
+	}
+	if !shared && mode == "inherit" {
+		return nil, fmt.Errorf("codex mode inherit requires a shared Unix app-server")
+	}
 	if _, err := resolveCodexExecutable(cmd); !shared && err != nil {
 		return nil, fmt.Errorf("codex: CLI lookup failed (set cmd or install with npm install -g @openai/codex): %w", err)
 	}
@@ -156,6 +162,8 @@ func normalizeAppServerURL(raw string) string {
 
 func normalizeMode(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "inherit":
+		return "inherit"
 	case "auto-edit", "autoedit", "auto_edit", "edit":
 		return "auto-edit"
 	case "full-auto", "fullauto", "full_auto", "auto":
@@ -688,7 +696,13 @@ func (a *Agent) sessionCodexHomeForProviderLocked(providerName string) (string, 
 func (a *Agent) SetMode(mode string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.mode = normalizeMode(mode)
+	target := normalizeMode(mode)
+	shared := a.backend == "app_server" && strings.HasPrefix(a.appServerURL, "unix://")
+	if (shared && target != "inherit") || (!shared && target == "inherit") {
+		slog.Warn("codex: mode is not supported by this transport", "mode", target)
+		return
+	}
+	a.mode = target
 	slog.Info("codex: approval mode changed", "mode", a.mode)
 }
 
@@ -949,13 +963,20 @@ func (a *Agent) activeProviderCodexConfig() (name string, apiKey string, wireAPI
 //     with approval_policy=never. Sandbox tier is what controls access. The
 //     "suggest" label refers to the *intent* (read-only safety) — the CLI does
 //     not pop interactive approval prompts on this backend.
-//   - app_server backend: "suggest" enables real interactive approval requests
+//   - shared app_server: explicit "inherit" uses native server policies.
+//   - dedicated app_server backend: "suggest" enables real interactive approval requests
 //     (execCommandApproval / applyPatchApproval / permissionsApproval).
 //
 // Note: auto-edit and full-auto produce the same flags on the exec backend
 // (codex CLI has no separate "ask for shell only" mode); auto-edit is kept as
 // an alias for backward compatibility with existing user configs.
 func (a *Agent) PermissionModes() []core.PermissionModeInfo {
+	a.mu.RLock()
+	shared := a.backend == "app_server" && strings.HasPrefix(a.appServerURL, "unix://")
+	a.mu.RUnlock()
+	if shared {
+		return []core.PermissionModeInfo{{Key: "inherit", Name: "Native policy", NameZh: "原生策略", Desc: "Inherit the native server's approval and sandbox policy; no additional restrictions from CC Connect", DescZh: "继承原生服务的审批和沙箱策略；CC Connect 不添加额外限制"}}
+	}
 	return []core.PermissionModeInfo{
 		{Key: "suggest", Name: "Suggest", NameZh: "建议",
 			Desc:   "Read-only sandbox; on exec backend no prompts, on app_server backend asks for every tool call",

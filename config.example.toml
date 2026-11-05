@@ -1766,9 +1766,11 @@ app_secret = "your-feishu-app-secret"
 # To share the existing local Codex daemon, set an absolute Unix socket URL:
 # 如需连接已有的本地 Codex 服务，请配置绝对 Unix 套接字地址：
 # app_server_url = "unix:///home/you/.codex/app-server-control/app-server-control.sock"
+# Shared mode also requires mode = "inherit"; native policies apply without extra restrictions.
+# 共享模式还必须设置 mode = "inherit"；使用原生策略，CC Connect 不添加额外限制。
 # See docs/codex-shared-server.md for profile, settings and recovery requirements.
 # 共享模式的配置目录、设置和故障恢复要求详见 docs/codex-shared-server.md。
-# mode = "suggest"  # "suggest" | "auto-edit" | "full-auto" | "yolo"
+# mode = "suggest"  # "suggest" | "auto-edit" | "full-auto" | "yolo"; shared server requires "inherit"
 # list_all_sessions = false # true: list/switch sessions across all directories in this Codex home.
 #                           # Resuming uses the session's saved directory; new sessions still use work_dir.
 #                           # /shell, /diff and /show follow that directory; /dir and /status display it.
@@ -1779,6 +1781,7 @@ app_secret = "your-feishu-app-secret"
 #                           # /shell、/diff 和 /show 使用会话目录；/dir 和 /status 显示该目录。
 #
 # Mode options / 模式说明:
+# - "inherit": shared Unix server only; native policy, no extra restriction / 仅限共享 Unix 服务；继承原生策略，不添加限制
 # - "suggest":   ask permission for every tool call (default, safest) / 每次调用都需确认（默认，最安全）
 # - "auto-edit": auto-approve file edits, ask for shell commands / 文件编辑自动通过，Shell 命令仍需确认
 # - "full-auto": auto-approve everything with workspace sandbox / 全部自动通过，工作区沙箱保护

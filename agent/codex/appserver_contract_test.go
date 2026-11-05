@@ -89,7 +89,7 @@ func TestSharedServerRealCodexContract(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	create := func(id string) *appServerSession {
-		s, err := newAppServerSession(ctx, "", nil, "unix://"+socket, dir, "", "", "suggest", id, "", "", nil, profile, "", "")
+		s, err := newAppServerSession(ctx, "", nil, "unix://"+socket, dir, "", "", "inherit", id, "", "", nil, profile, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}

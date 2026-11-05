@@ -38,17 +38,30 @@ func (s *appServerSession) SendSkill(prompt, messageID string, images []core.Ima
 	return nil
 }
 
-// ListSkills asks the same CLI that executes turns for its enabled catalog.
+// ListSkills asks the configured Codex server for its enabled catalog. Shared
+// mode uses a management connection; other modes use a metadata-only CLI.
 // No thread or model turn is created. In particular, cached plugin packages
 // and skill repositories are not evidence that their skills are enabled.
 func (a *Agent) ListSkills(ctx context.Context) ([]*core.Skill, error) {
 	a.mu.RLock()
 	bin, workDir, codexHome := a.cmd, a.workDir, a.codexHome
+	backend, url := a.backend, a.appServerURL
 	args := append([]string(nil), a.cliExtraArgs...)
 	env := append([]string(nil), a.configEnv...)
 	env = append(env, a.providerEnvLocked()...)
 	env = append(env, a.sessionEnv...)
 	a.mu.RUnlock()
+	if backend == "app_server" && strings.HasPrefix(url, "unix://") {
+		absDir, err := filepath.Abs(workDir)
+		if err != nil {
+			return nil, fmt.Errorf("codex: skills work directory: %w", err)
+		}
+		var result codexSkillsResponse
+		if err := sharedServerRequest(ctx, url, "skills/list", map[string]any{"cwds": []string{absDir}, "forceReload": true}, &result); err != nil {
+			return nil, fmt.Errorf("codex: list skills: %w", err)
+		}
+		return result.load(absDir)
+	}
 	bin, err := resolveCodexExecutable(bin)
 	if err != nil {
 		return nil, fmt.Errorf("codex: skills resolve CLI: %w", err)

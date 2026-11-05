@@ -212,6 +212,9 @@ func newAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []stri
 		return nil, err
 	}
 	if strings.HasPrefix(url, "unix://") {
+		if mode != "inherit" {
+			return nil, fmt.Errorf("codex shared server requires mode = \"inherit\"; native approval and sandbox policies apply")
+		}
 		if len(cliExtraArgs) > 0 || baseURL != "" || modelProvider != "" {
 			return nil, fmt.Errorf("codex shared server owns its CLI arguments and provider configuration")
 		}
@@ -442,6 +445,8 @@ func (s *appServerSession) threadRequestParams() map[string]any {
 
 func appServerModeSettings(mode string) (approval string, sandbox string) {
 	switch normalizeMode(mode) {
+	case "inherit":
+		return "", ""
 	case "auto-edit", "full-auto":
 		return "never", "workspace-write"
 	case "yolo":

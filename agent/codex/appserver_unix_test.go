@@ -49,7 +49,7 @@ func TestUnixSocketResumeUsesExistingServer(t *testing.T) {
 	})}
 	go server.Serve(listener)
 	defer server.Close()
-	s, err := newAppServerSession(context.Background(), "/nonexistent-codex", nil, "unix://"+path, t.TempDir(), "", "", "suggest", "existing", "", "", nil, "", "", "")
+	s, err := newAppServerSession(context.Background(), "/nonexistent-codex", nil, "unix://"+path, t.TempDir(), "", "", "inherit", "existing", "", "", nil, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

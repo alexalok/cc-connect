@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -174,4 +175,20 @@ func (s *appServerSession) dispatchSharedMessage(message sharedMessage) {
 	if message.method == "turn/completed" {
 		s.sharedTurn = ""
 	}
+}
+
+// sharedServerRequest opens a metadata-only connection. It never attaches a
+// thread, starts a turn, or needs a local Codex executable.
+func sharedServerRequest(ctx context.Context, url, method string, params, out any) error {
+	ctx, cancel := context.WithCancel(ctx)
+	s := &appServerSession{url: url, ctx: ctx, cancel: cancel, events: make(chan core.Event, 128), pending: make(map[int64]chan rpcResponseEnvelope)}
+	s.alive.Store(true)
+	defer func() { _ = s.Close() }()
+	if err := s.connect(); err != nil {
+		return err
+	}
+	if err := s.initialize(); err != nil {
+		return err
+	}
+	return s.request(method, params, out)
 }

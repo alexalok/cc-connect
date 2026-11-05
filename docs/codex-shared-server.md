@@ -7,6 +7,7 @@ Connect CC Connect to that client's existing local server instead:
 ```toml
 [projects.agent.options]
 backend = "app_server"
+mode = "inherit"
 app_server_url = "unix:///home/you/.codex/app-server-control/app-server-control.sock"
 codex_home = "/home/you/.codex"
 work_dir = "/path/to/project"
@@ -29,10 +30,13 @@ WebSocket listeners are not supported by this adapter.
 - Each conversation uses its own connection to the same server. New threads
   receive `work_dir` explicitly. Resuming sends only the thread ID, preserving
   the existing thread's working directory and approval/sandbox settings.
-- `mode` applies when creating a new shared thread. Change an existing thread's
-  approval policy in its native client; changing `/mode` in CC Connect does not
-  rewrite that thread's policy. Explicit `model` and `reasoning_effort` options
-  apply to submitted turns; leave them unset to keep the server's current values.
+- Shared mode requires an explicit `mode = "inherit"`. The native server controls
+  approval and sandbox policies for both new and existing threads. CC Connect
+  adds no policy restriction. Configurations claiming `suggest`, `full-auto`, or
+  `yolo` are rejected; `/mode` displays only **Native policy** and cannot change
+  it. Configure policy in the native client/server before granting users access.
+  Explicit `model` and `reasoning_effort` options apply to submitted turns; leave
+  them unset to keep the server's current values.
 - The daemon owns its provider, credentials and environment. Per-project `env`,
   extra CLI arguments and provider overrides are rejected in shared mode.
   Runtime `CC_*` session variables cannot be injected into an already running
@@ -41,7 +45,8 @@ WebSocket listeners are not supported by this adapter.
   match the configured server; it does not change the server's profile.
 - `/stop` interrupts the specific turn accepted for this connection. Idle
   cleanup, `/new`, and shutdown close the subscriber connection. They do not
-  kill the server. Archiving also uses the existing server.
+  kill the server. Archiving and native skill discovery also use the existing
+  server, without requiring a local Codex executable.
 
 ## Multiple clients and recovery
 

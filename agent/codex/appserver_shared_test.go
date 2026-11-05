@@ -72,7 +72,7 @@ func sharedTestServer(t *testing.T, handle func(*websocket.Conn, sharedTestReque
 
 func sharedTestSession(t *testing.T, url, resumeID string) *appServerSession {
 	t.Helper()
-	s, err := newAppServerSession(context.Background(), "/no/codex/binary", nil, url, t.TempDir(), "", "", "suggest", resumeID, "", "", nil, "", "", "")
+	s, err := newAppServerSession(context.Background(), "/no/codex/binary", nil, url, t.TempDir(), "", "", "inherit", resumeID, "", "", nil, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,8 +164,11 @@ func TestSharedServerStartSetsWorkingDirectoryAndInterruptTargetsTurn(t *testing
 	if cwd, ok := params["cwd"].(string); !ok || !filepath.IsAbs(cwd) {
 		t.Fatalf("missing cwd: %v", params)
 	}
-	if params["approvalPolicy"] != "on-request" || params["sandbox"] != "read-only" {
-		t.Fatalf("new thread policy missing: %v", params)
+	if _, ok := params["approvalPolicy"]; ok {
+		t.Fatalf("native approval policy overwritten: %v", params)
+	}
+	if _, ok := params["sandbox"]; ok {
+		t.Fatalf("native sandbox overwritten: %v", params)
 	}
 	if err := s.Send("work", "id", nil, nil); err != nil {
 		t.Fatal(err)
@@ -242,6 +245,7 @@ func TestSharedServerConfigRejectsUnsupportedTransportAndChildOptions(t *testing
 		{"app_server_url": "unix:///tmp/test.sock", "cmd": []any{"/no/codex/binary", "--profile", "x"}},
 	} {
 		opts["backend"] = "app_server"
+		opts["mode"] = "inherit"
 		if _, ok := opts["cmd"]; !ok {
 			opts["cmd"] = "/no/codex/binary"
 		}
@@ -249,7 +253,7 @@ func TestSharedServerConfigRejectsUnsupportedTransportAndChildOptions(t *testing
 			t.Fatalf("unsupported configuration accepted: %v", opts)
 		}
 	}
-	a, err := New(map[string]any{"backend": "app_server", "app_server_url": "unix:///tmp/test.sock", "cmd": "/no/codex/binary"})
+	a, err := New(map[string]any{"backend": "app_server", "mode": "inherit", "app_server_url": "unix:///tmp/test.sock", "cmd": "/no/codex/binary"})
 	if err != nil {
 		t.Fatalf("shared mode required local CLI: %v", err)
 	}
@@ -271,7 +275,7 @@ func TestSharedServerArchiveUsesManagementConnection(t *testing.T) {
 		}
 		return false
 	})
-	a, err := New(map[string]any{"backend": "app_server", "app_server_url": url, "cmd": "/no/codex/binary"})
+	a, err := New(map[string]any{"backend": "app_server", "mode": "inherit", "app_server_url": url, "cmd": "/no/codex/binary"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,5 +284,56 @@ func TestSharedServerArchiveUsesManagementConnection(t *testing.T) {
 	}
 	if (<-archived)["threadId"] != "shared-thread" {
 		t.Fatal("wrong thread archived")
+	}
+}
+
+func TestSharedServerRequiresExplicitNativePolicy(t *testing.T) {
+	for _, mode := range []string{"", "suggest", "yolo", "full-auto"} {
+		if _, err := New(map[string]any{"backend": "app_server", "app_server_url": "unix:///tmp/test.sock", "mode": mode}); err == nil {
+			t.Fatalf("mode %q silently inherited native privileges", mode)
+		}
+	}
+	a, err := New(map[string]any{"backend": "app_server", "app_server_url": "unix:///tmp/test.sock", "mode": "inherit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := a.(*Agent)
+	agent.SetMode("suggest")
+	if agent.GetMode() != "inherit" {
+		t.Fatal("mode command claimed an unenforced restriction")
+	}
+	modes := agent.PermissionModes()
+	if len(modes) != 1 || modes[0].Key != "inherit" {
+		t.Fatal("shared mode menu advertises unenforced policies")
+	}
+}
+
+func TestSharedServerSkillCatalogWithoutLocalCLI(t *testing.T) {
+	dir := t.TempDir()
+	skillPath := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte("---\nname: example\ndescription: Test skill\n---\nTest instructions\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	url := sharedTestServer(t, func(c *websocket.Conn, req sharedTestRequest) bool {
+		switch req.Method {
+		case "thread/start", "thread/resume", "turn/start":
+			t.Errorf("skill lookup called %s", req.Method)
+		case "skills/list":
+			cwds, _ := req.Params["cwds"].([]any)
+			if len(cwds) != 1 || cwds[0] != dir || req.Params["forceReload"] != true {
+				t.Errorf("wrong catalog scope: %v", req.Params)
+			}
+			c.WriteJSON(map[string]any{"id": req.ID, "result": map[string]any{"data": []any{map[string]any{"cwd": dir, "skills": []any{map[string]any{"name": "plugin:example", "description": "Native skill", "path": skillPath, "enabled": true}}}}}})
+			return true
+		}
+		return false
+	})
+	a, err := New(map[string]any{"backend": "app_server", "app_server_url": url, "mode": "inherit", "cmd": "/no/codex/binary", "work_dir": dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skills, err := a.(*Agent).ListSkills(context.Background())
+	if err != nil || len(skills) != 1 || skills[0].Name != "plugin:example" || !strings.Contains(skills[0].Prompt, "Test instructions") {
+		t.Fatalf("native catalog unavailable: %v, %v", skills, err)
 	}
 }
