@@ -3785,3 +3785,51 @@ func TestCUJ_B17_ReasoningChangePreservesConversation(t *testing.T) {
 		})
 	}
 }
+
+func TestCUJ_B17_ReasoningChangeWithWorkspaceDirectoryOverride(t *testing.T) {
+	for _, card := range []bool{false, true} {
+		t.Run(fmt.Sprintf("card=%v", card), func(t *testing.T) {
+			env := newCUJEnv(t)
+			env.plat.n = "feishu"
+			e := env.engine
+			t.Cleanup(func() { _ = e.Stop() })
+			workspace := normalizeWorkspacePath(t.TempDir())
+			override := normalizeWorkspacePath(t.TempDir())
+			e.SetMultiWorkspace(t.TempDir(), filepath.Join(t.TempDir(), "bindings.json"))
+			e.workspaceBindings.Bind("project:test", "C-reasoning-override", "chan", workspace)
+			const key = "feishu:C-reasoning-override:u1"
+			store := NewProjectStateStore(filepath.Join(t.TempDir(), "state.json"))
+			store.SetWorkspaceDirOverride(workspace+":"+key, override)
+			e.SetProjectStateStore(store)
+			originalAgent := &cujReasoningAgent{effort: "high"}
+			originalWS := e.workspacePool.GetOrCreate(workspace)
+			originalWS.agent, originalWS.sessions = originalAgent, NewSessionManager("")
+			activeWS := e.workspacePool.GetOrCreate(override)
+			activeWS.agent, activeWS.sessions = &cujReasoningAgent{effort: "low"}, NewSessionManager("")
+			send := func(content string) {
+				e.ReceiveMessage(env.plat, &Message{SessionKey: key, Platform: "feishu", UserID: "u1", Content: content, ReplyCtx: "ctx"})
+			}
+			waitReply := func(want string) {
+				env.waitFor(want, 3*time.Second, func() bool {
+					return strings.Contains(strings.Join(env.plat.getSent(), "\n"), want) && !activeWS.sessions.GetOrCreateActive(key).Busy()
+				})
+			}
+			send("Remember the override task")
+			waitReply("conversation=native-1 effort=low")
+			if card {
+				e.handleCardNav("act:/reasoning 2", key)
+			} else {
+				send("/reasoning medium")
+			}
+			send("Continue the override task")
+			waitReply("conversation=native-1 effort=medium")
+			send("/history")
+			if !strings.Contains(env.lastSent(), "Remember the override task") {
+				t.Fatalf("lost override history: %s", env.lastSent())
+			}
+			if originalAgent.GetReasoningEffort() != "high" {
+				t.Fatal("changed the binding's original agent")
+			}
+		})
+	}
+}
