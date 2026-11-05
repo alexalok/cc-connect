@@ -660,21 +660,71 @@ func waitForWrittenJSONLine(t *testing.T, w *lockedWriteCloser) string {
 
 func TestAppServerListenURL(t *testing.T) {
 	cases := map[string]string{
-		"":                       "",
-		"  ":                     "",
-		"stdio://":               "",
-		"stdio":                  "",
-		"ws://127.0.0.1:3845":    "ws://127.0.0.1:3845",
-		"ws://localhost:9000":    "ws://localhost:9000",
-		"ws://127.0.0.1:3845 ":   "ws://127.0.0.1:3845",
-		" stdio ":                 "",
-		" stdio:// ":               "",
-		"STDIO":                    "",
-		"STDIO://":                 "",
+		"":                     "",
+		"  ":                   "",
+		"stdio://":             "",
+		"stdio":                "",
+		"ws://127.0.0.1:3845":  "ws://127.0.0.1:3845",
+		"ws://localhost:9000":  "ws://localhost:9000",
+		"ws://127.0.0.1:3845 ": "ws://127.0.0.1:3845",
+		" stdio ":              "",
+		" stdio:// ":           "",
+		"STDIO":                "",
+		"STDIO://":             "",
 	}
 	for in, want := range cases {
 		if got := appServerListenURL(in); got != want {
 			t.Errorf("appServerListenURL(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestAppServerSession_ResumePreservesSelectedReasoningEffort(t *testing.T) {
+	for _, selected := range []string{"", "medium"} {
+		t.Run("selected="+selected, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			stdin := &lockedWriteCloser{}
+			s := &appServerSession{ctx: ctx, stdin: stdin, pending: make(map[int64]chan rpcResponseEnvelope), effort: selected}
+			s.alive.Store(true)
+			done := make(chan error, 1)
+			go func() { done <- s.ensureThread("existing-thread") }()
+			var req struct {
+				ID     int64          `json:"id"`
+				Method string         `json:"method"`
+				Params map[string]any `json:"params"`
+			}
+			if err := json.Unmarshal([]byte(waitForWrittenJSONLine(t, stdin)), &req); err != nil {
+				t.Fatal(err)
+			}
+			if req.Method != "thread/resume" || req.Params["threadId"] != "existing-thread" {
+				t.Fatalf("unexpected resume: %+v", req)
+			}
+			s.handleResponse(rpcResponseEnvelope{ID: req.ID, Result: json.RawMessage(`{"reasoningEffort":"high","thread":{"id":"existing-thread"}}`)})
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			want := selected
+			if want == "" {
+				want = "high"
+			}
+			if got := s.GetReasoningEffort(); got != want {
+				t.Fatalf("resumed effort = %q, want %q", got, want)
+			}
+			stdin.mu.Lock()
+			stdin.buf.Reset()
+			stdin.mu.Unlock()
+			go func() { done <- s.Send("continue", "message", nil, nil) }()
+			if err := json.Unmarshal([]byte(waitForWrittenJSONLine(t, stdin)), &req); err != nil {
+				t.Fatal(err)
+			}
+			if req.Method != "turn/start" || req.Params["threadId"] != "existing-thread" || req.Params["effort"] != want {
+				t.Fatalf("next turn did not retain conversation and selected effort: %+v", req)
+			}
+			s.handleResponse(rpcResponseEnvelope{ID: req.ID, Result: json.RawMessage(`{"turn":{"id":"turn-1"}}`)})
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

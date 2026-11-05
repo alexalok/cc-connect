@@ -3723,3 +3723,65 @@ func testCUJNewTopicHistory(t *testing.T) {
 		t.Fatalf("topic conversation appeared in General: %v", env.plat.getSent())
 	}
 }
+
+// cujReasoningAgent reports the native conversation and effort used for each
+// turn, so the journey detects both lost context and stale settings.
+type cujReasoningAgent struct {
+	stubAgent
+	mu     sync.Mutex
+	effort string
+	starts int
+}
+
+func (a *cujReasoningAgent) SetReasoningEffort(effort string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.effort = effort
+}
+func (a *cujReasoningAgent) GetReasoningEffort() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.effort
+}
+func (a *cujReasoningAgent) AvailableReasoningEfforts() []string {
+	return []string{"low", "medium", "high"}
+}
+func (a *cujReasoningAgent) StartSession(_ context.Context, id string) (AgentSession, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.starts++
+	if id == "" {
+		id = fmt.Sprintf("native-%d", a.starts)
+	}
+	s := newCUJAgentSession()
+	s.reply = fmt.Sprintf("conversation=%s effort=%s", id, a.effort)
+	return &cujDirectorySession{cujAgentSession: s, id: id}, nil
+}
+
+func TestCUJ_B17_ReasoningChangePreservesConversation(t *testing.T) {
+	for _, idle := range []bool{false, true} {
+		t.Run(fmt.Sprintf("released=%v", idle), func(t *testing.T) {
+			env := newCUJEnv(t)
+			env.engine.agent = &cujReasoningAgent{effort: "low"}
+			t.Cleanup(func() { _ = env.engine.Stop() })
+			key := env.userSends("reasoning", "Remember the original task")
+			waitReply := func(want string) {
+				env.waitFor(want, 3*time.Second, func() bool {
+					return strings.Contains(strings.Join(env.plat.getSent(), "\n"), want) && !env.engine.sessions.GetOrCreateActive(key).Busy()
+				})
+			}
+			waitReply("conversation=native-1 effort=low")
+			if idle {
+				env.engine.cleanupInteractiveState(env.engine.interactiveKeyForSessionKey(key))
+			}
+			env.userSends("reasoning", "/reasoning medium")
+			waitReply(env.engine.i18n.Tf(MsgReasoningChanged, "medium"))
+			env.userSends("reasoning", "Continue the original task")
+			waitReply("conversation=native-1 effort=medium")
+			env.userSends("reasoning", "/history")
+			if !strings.Contains(env.lastSent(), "Remember the original task") {
+				t.Fatalf("lost conversation history: %s", env.lastSent())
+			}
+		})
+	}
+}
