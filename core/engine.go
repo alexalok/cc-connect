@@ -6346,6 +6346,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			e.showAsyncUserInput(state, p, replyCtx, event)
 
 		case EventPermissionRequest:
+			select {
+			case <-event.PermissionResolved:
+				continue
+			default:
+			}
 			// extension_select is a Pi extension UI request routed via the
 			// AskUserQuestion rich-card path. The pi session adapter populates
 			// event.Questions so it renders as a button card (same UX as Claude
@@ -6428,7 +6433,16 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				idleTimer.Stop()
 			}
 
-			<-pending.Resolved
+			select {
+			case <-pending.Resolved:
+			case <-event.PermissionResolved:
+				state.mu.Lock()
+				if state.pending == pending {
+					state.pending = nil
+				}
+				state.mu.Unlock()
+				pending.resolve()
+			}
 			updateStatus("")
 			slog.Info("permission resolved", "request_id", event.RequestID)
 

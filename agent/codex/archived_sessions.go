@@ -13,8 +13,8 @@ import (
 )
 
 // ArchivedSessionIDs reconciles the durable result of thread/archive. Each
-// bridge session has its own app-server process, so notifications from another
-// client are not a reliable subscription, especially across bridge downtime.
+// bridge session has its own connection or process, so notifications from
+// another client cannot cover archives that happen during bridge downtime.
 // Absence from sessions is never evidence of an archive.
 func (a *Agent) ArchivedSessionIDs(ctx context.Context, ids []string) ([]string, error) {
 	if len(ids) == 0 {

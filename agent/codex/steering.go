@@ -2,7 +2,6 @@ package codex
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 )
@@ -32,12 +31,15 @@ func (s *appServerSession) SteerMessage(prompt, messageID string, images []core.
 		"threadId":            s.CurrentSessionID(),
 		"expectedTurnId":      turnID,
 		"input":               input,
-		"clientUserMessageId": fmt.Sprintf("%s:%s:%d", mirrorTurnOrigin, messageID, time.Now().UnixNano()),
+		"clientUserMessageId": s.clientMessageID(messageID),
 	}
 	var response struct {
 		TurnID string `json:"turnId"`
 	}
 	if err := s.request("turn/steer", params, &response); err != nil {
+		if s.isShared() {
+			return true, s.sharedSubmissionError("turn/steer", err)
+		}
 		return false, fmt.Errorf("codex app-server turn/steer: %w", err)
 	}
 	if response.TurnID != turnID {

@@ -40,6 +40,7 @@ func (s *appServerSession) connectUnixSocket(path string) error {
 	if err != nil {
 		return fmt.Errorf("codex app-server connect Unix socket: %w", err)
 	}
+	conn.SetReadLimit(16 * 1024 * 1024)
 	s.procMu.Lock()
 	s.stdin = &unixSocketStream{conn: conn}
 	s.procMu.Unlock()
@@ -54,7 +55,6 @@ func (s *appServerSession) connectUnixSocket(path string) error {
 		defer s.wg.Done()
 		defer stop()
 		defer conn.Close()
-		defer reader.Close()
 		defer writer.Close()
 		for {
 			_, data, err := conn.ReadMessage()

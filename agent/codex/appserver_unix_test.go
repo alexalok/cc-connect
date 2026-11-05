@@ -69,6 +69,10 @@ func TestUnixSocketResumeUsesExistingServer(t *testing.T) {
 	if s.currentTurn != "" {
 		t.Fatal("cross-thread event accepted")
 	}
+	if err := s.beginSharedTurn(); err != nil {
+		t.Fatal(err)
+	}
+	s.finishSharedTurn("right")
 	s.handleNotification("turn/started", json.RawMessage(`{"threadId":"existing","turn":{"id":"right"}}`))
 	if s.currentTurn != "right" {
 		t.Fatal("own event lost")

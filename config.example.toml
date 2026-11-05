@@ -1761,6 +1761,13 @@ app_secret = "your-feishu-app-secret"
 #
 # [projects.agent.options]
 # work_dir = "/path/to/project"
+# backend = "app_server" # Optional: JSON-RPC instead of codex exec / 可选：使用 JSON-RPC
+# app_server_url = "stdio://" # Default: dedicated child / 默认：独立子进程
+# To share the existing local Codex daemon, set an absolute Unix socket URL:
+# 如需连接已有的本地 Codex 服务，请配置绝对 Unix 套接字地址：
+# app_server_url = "unix:///home/you/.codex/app-server-control/app-server-control.sock"
+# See docs/codex-shared-server.md for profile, settings and recovery requirements.
+# 共享模式的配置目录、设置和故障恢复要求详见 docs/codex-shared-server.md。
 # mode = "suggest"  # "suggest" | "auto-edit" | "full-auto" | "yolo"
 # list_all_sessions = false # true: list/switch sessions across all directories in this Codex home.
 #                           # Resuming uses the session's saved directory; new sessions still use work_dir.

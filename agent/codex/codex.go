@@ -81,7 +81,13 @@ func New(opts map[string]any) (core.Agent, error) {
 	if cmd == "" {
 		cmd = strings.TrimSpace(os.Getenv("CODEX_CLI_PATH"))
 	}
-	if _, err := resolveCodexExecutable(cmd); err != nil {
+	if backend == "app_server" {
+		if err := validateAppServerURL(appServerURL); err != nil {
+			return nil, err
+		}
+	}
+	shared := backend == "app_server" && strings.HasPrefix(appServerURL, "unix://")
+	if _, err := resolveCodexExecutable(cmd); !shared && err != nil {
 		return nil, fmt.Errorf("codex: CLI lookup failed (set cmd or install with npm install -g @openai/codex): %w", err)
 	}
 
@@ -100,6 +106,10 @@ func New(opts map[string]any) (core.Agent, error) {
 				configEnv = append(configEnv, k+"="+s)
 			}
 		}
+	}
+
+	if shared && (len(configEnv) > 0 || len(cliExtraArgs) > 0) {
+		return nil, fmt.Errorf("codex shared server owns its environment and CLI arguments; configure them on the server")
 	}
 
 	return &Agent{
@@ -520,9 +530,14 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 		}
 		baseURL = a.providers[a.activeIdx].BaseURL
 	}
+	providerOverride := a.activeIdx >= 0 && a.activeIdx < len(a.providers)
 	provName, provAPIKey, provWireAPI, provHeaders := a.activeProviderCodexConfig()
 	listAllSessions := a.listAllSessions
 	a.mu.Unlock()
+
+	if backend == "app_server" && strings.HasPrefix(appServerURL, "unix://") && providerOverride {
+		return nil, fmt.Errorf("codex shared server owns its provider; remove the cc-connect provider override")
+	}
 
 	if listAllSessions {
 		// A relative Codex home must not select a different profile when a
@@ -550,7 +565,14 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	}
 
 	if backend == "app_server" {
-		return newAppServerSession(ctx, cliBin, cliExtraArgs, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome, systemPrompt, appendPrompt)
+		session, err := newAppServerSession(ctx, cliBin, cliExtraArgs, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome, systemPrompt, appendPrompt)
+		if err != nil {
+			return nil, err
+		}
+		if session.isShared() {
+			return &sharedAppServerSession{session}, nil
+		}
+		return session, nil
 	}
 	if codexHome != "" {
 		extraEnv = append(extraEnv, "CODEX_HOME="+codexHome)
