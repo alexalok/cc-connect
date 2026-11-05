@@ -505,11 +505,13 @@ func (s *appServerSession) send(prompt string, messageID string, images []core.I
 	}
 
 	input := make([]map[string]any, 0, 1+len(imagePaths))
-	input = append(input, map[string]any{
-		"type":          "text",
-		"text":          prompt,
-		"text_elements": []any{},
-	})
+	if strings.TrimSpace(prompt) != "" {
+		input = append(input, map[string]any{
+			"type":          "text",
+			"text":          prompt,
+			"text_elements": []any{},
+		})
+	}
 	for _, path := range imagePaths {
 		input = append(input, map[string]any{
 			"type": "localImage",
@@ -577,10 +579,6 @@ func (s *appServerSession) stageImages(prompt string, images []core.ImageAttachm
 			return "", nil, fmt.Errorf("codex app-server: save image: %w", err)
 		}
 		imagePaths = append(imagePaths, fpath)
-	}
-
-	if strings.TrimSpace(prompt) == "" {
-		prompt = "Please analyze the attached image(s)."
 	}
 
 	return prompt, imagePaths, nil
