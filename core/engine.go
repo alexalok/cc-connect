@@ -10966,9 +10966,25 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 	switcher.SetReasoningEffort(target)
 	// Restart the live agent to pick up the effort, retaining the native
 	// conversation ID and history so the next message resumes it.
-	e.cleanupInteractiveState(interactiveKey)
+	e.cleanupReasoningSession(msg.SessionKey, interactiveKey)
 
 	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningChanged, target))
+}
+
+// cleanupReasoningSession retires the live connection without resetting its
+// stored conversation. A workspace /dir override keeps the binding key for
+// settings, but message dispatch stores the live state under the effective dir.
+func (e *Engine) cleanupReasoningSession(sessionKey, interactiveKey string) {
+	liveKey := interactiveKey
+	if e.multiWorkspace {
+		if workspace := workspaceFromInteractiveKey(interactiveKey, sessionKey); workspace != "" {
+			liveKey = e.resolveChannelWorkDir(workspace, interactiveKey) + ":" + sessionKey
+		}
+	}
+	e.cleanupInteractiveState(interactiveKey)
+	if liveKey != interactiveKey {
+		e.cleanupInteractiveState(liveKey)
+	}
 }
 
 func (e *Engine) reasoningUsage(efforts []string) string {
@@ -13315,7 +13331,7 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		for _, effort := range efforts {
 			if effort == target {
 				switcher.SetReasoningEffort(target)
-				e.cleanupInteractiveState(interactiveKey)
+				e.cleanupReasoningSession(sessionKey, interactiveKey)
 				return
 			}
 		}
