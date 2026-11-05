@@ -5535,7 +5535,7 @@ func TestCmdReasoning_UsageListsAgentEfforts(t *testing.T) {
 	t.Run("card note", func(t *testing.T) {
 		agent := &stubModelModeAgent{reasoningEfforts: efforts}
 		e := NewEngine("test", agent, nil, "", LangEnglish)
-		card := e.renderReasoningCard()
+		card := e.renderReasoningCard(agent)
 
 		for _, element := range card.Elements {
 			if note, ok := element.(CardNote); ok && note.Text == wantUsage {
@@ -16836,5 +16836,46 @@ func TestReasoningCardAction_PreservesSession(t *testing.T) {
 	}
 	if s.GetAgentSessionID() != "existing-session" || s.HistoryLen() != 1 {
 		t.Fatal("reasoning button discarded conversation")
+	}
+}
+
+func TestReasoningCard_MultiWorkspaceSelectionAndNavigation(t *testing.T) {
+	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	global := &stubModelModeAgent{reasoningEffort: "low"}
+	e := NewEngine("test", global, []Platform{p}, "", LangEnglish)
+	e.SetMultiWorkspace(t.TempDir(), filepath.Join(t.TempDir(), "bindings.json"))
+	dir := normalizeWorkspacePath(t.TempDir())
+	e.workspaceBindings.Bind("project:test", "C-reasoning", "chan", dir)
+	ws := e.workspacePool.GetOrCreate(dir)
+	ws.agent = &stubModelModeAgent{reasoningEffort: "medium", reasoningEfforts: []string{"medium", "max"}}
+	ws.sessions = NewSessionManager("")
+	msg := &Message{SessionKey: "feishu:C-reasoning:u1", ReplyCtx: "ctx"}
+	assertCard := func(card *Card, effort, value string) {
+		t.Helper()
+		if card == nil || !strings.Contains(card.RenderText(), e.i18n.Tf(MsgReasoningCurrent, effort)) {
+			t.Fatalf("card does not display workspace effort %q: %+v", effort, card)
+		}
+		for _, elem := range card.Elements {
+			if selectEl, ok := elem.(CardSelect); ok {
+				if selectEl.InitValue != value || len(selectEl.Options) != 2 || selectEl.Options[1].Text != "max" {
+					t.Fatalf("wrong workspace selection: %+v", selectEl)
+				}
+				return
+			}
+		}
+		t.Fatal("missing reasoning selector")
+	}
+	// A slash command and navigation must show workspace options/current effort.
+	e.cmdReasoning(p, msg, nil)
+	if len(p.repliedCards) != 1 {
+		t.Fatalf("replied cards = %d", len(p.repliedCards))
+	}
+	assertCard(p.repliedCards[0], "medium", "act:/reasoning 1")
+	assertCard(e.handleCardNav("nav:/reasoning", msg.SessionKey), "medium", "act:/reasoning 1")
+	// Selection and a later visit must agree with the setting actually changed.
+	assertCard(e.handleCardNav("act:/reasoning 2", msg.SessionKey), "max", "act:/reasoning 2")
+	assertCard(e.handleCardNav("nav:/reasoning", msg.SessionKey), "max", "act:/reasoning 2")
+	if global.GetReasoningEffort() != "low" {
+		t.Fatal("workspace action changed global effort")
 	}
 }
