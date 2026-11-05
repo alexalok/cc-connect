@@ -3788,7 +3788,9 @@ found:
 		}
 
 		state.mu.Lock()
-		state.pending = nil
+		if state.pending == pending {
+			state.pending = nil
+		}
 		state.mu.Unlock()
 		pending.resolve()
 		return true
@@ -3834,7 +3836,9 @@ found:
 	}
 
 	state.mu.Lock()
-	state.pending = nil
+	if state.pending == pending {
+		state.pending = nil
+	}
 	state.mu.Unlock()
 	pending.resolve()
 
@@ -11297,7 +11301,13 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 		if cancelErr != nil {
 			slog.Warn("agent session CancelTurn failed, falling back to Close",
 				"session_key", sessionKey, "error", cancelErr)
-			// Fall through to normal cleanup below.
+			// Cancellation ran without interactiveMu. Another cleanup or a
+			// replacement session may have taken ownership in the meantime.
+			e.interactiveMu.Lock()
+			if e.interactiveStates[sessionKey] != state {
+				e.interactiveMu.Unlock()
+				return true
+			}
 			goto normalCleanup
 		}
 
