@@ -269,10 +269,6 @@ func (cs *codexSession) stageImages(prompt string, images []core.ImageAttachment
 		imagePaths = append(imagePaths, fpath)
 	}
 
-	if strings.TrimSpace(prompt) == "" {
-		prompt = "Please analyze the attached image(s)."
-	}
-
 	return prompt, imagePaths, nil
 }
 
