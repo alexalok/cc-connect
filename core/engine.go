@@ -10888,7 +10888,7 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 }
 
 func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
-	agent, sessions, _, err := e.commandContext(p, msg)
+	agent, _, interactiveKey, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
@@ -10964,12 +10964,9 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 	}
 
 	switcher.SetReasoningEffort(target)
-	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
-
-	s := sessions.GetOrCreateActive(msg.SessionKey)
-	s.SetAgentSessionID("", "")
-	s.ClearHistory()
-	sessions.Save()
+	// Restart the live agent to pick up the effort, retaining the native
+	// conversation ID and history so the next message resumes it.
+	e.cleanupInteractiveState(interactiveKey)
 
 	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningChanged, target))
 }
@@ -13304,7 +13301,8 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if args == "" {
 			return
 		}
-		switcher, ok := e.agent.(ReasoningEffortSwitcher)
+		agent, _ := e.sessionContextForKey(sessionKey)
+		switcher, ok := agent.(ReasoningEffortSwitcher)
 		if !ok {
 			return
 		}
@@ -13317,10 +13315,6 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 			if effort == target {
 				switcher.SetReasoningEffort(target)
 				e.cleanupInteractiveState(interactiveKey)
-				s := e.sessions.GetOrCreateActive(sessionKey)
-				s.SetAgentSessionID("", "")
-				s.ClearHistory()
-				e.sessions.Save()
 				return
 			}
 		}

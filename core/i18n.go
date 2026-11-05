@@ -2450,11 +2450,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Esfuerzo de razonamiento actual: %s",
 	},
 	MsgReasoningChanged: {
-		LangEnglish:            "Reasoning effort switched to `%s`. New sessions will use this setting.",
-		LangChinese:            "推理强度已切换为 `%s`，新会话将使用此设置。",
-		LangTraditionalChinese: "推理強度已切換為 `%s`，新會話將使用此設定。",
-		LangJapanese:           "推論強度を `%s` に切り替えました。新しいセッションで使用されます。",
-		LangSpanish:            "Esfuerzo de razonamiento cambiado a `%s`. Las nuevas sesiones usarán esta configuración.",
+		LangEnglish:            "Reasoning effort switched to `%s`. Your next message will continue this conversation with the new setting.",
+		LangChinese:            "推理强度已切换为 `%s`，下一条消息将使用此设置继续当前会话。",
+		LangTraditionalChinese: "推理強度已切換為 `%s`，下一則訊息將使用此設定繼續目前的會話。",
+		LangJapanese:           "推論強度を `%s` に切り替えました。次のメッセージは新しい設定でこの会話を続けます。",
+		LangSpanish:            "Esfuerzo de razonamiento cambiado a `%s`. Tu próximo mensaje continuará esta conversación con la nueva configuración.",
 	},
 	MsgReasoningNotSupported: {
 		LangEnglish:            "This agent does not support reasoning effort switching.",
