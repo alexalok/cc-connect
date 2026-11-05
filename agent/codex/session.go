@@ -335,6 +335,13 @@ func (cs *codexSession) buildExecArgs(prompt string, imagePaths []string) []stri
 		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", cs.effort))
 	}
 
+	// A forced stdin prompt ("-") rejects blank input even when images are
+	// attached. An explicit empty argument supports image-only turns.
+	promptArg := "-"
+	if len(imagePaths) > 0 && strings.TrimSpace(prompt) == "" {
+		promptArg = ""
+	}
+
 	if isResume {
 		args = append(args, tid)
 		for _, imagePath := range imagePaths {
@@ -342,12 +349,12 @@ func (cs *codexSession) buildExecArgs(prompt string, imagePaths []string) []stri
 		}
 		// codex exec resume does not support --cd; cmd.Dir handles cwd instead.
 		// Use stdin ("-") so multiline prompts are preserved reliably on Windows.
-		args = append(args, "--json", "-")
+		args = append(args, "--json", promptArg)
 	} else {
 		for _, imagePath := range imagePaths {
 			args = append(args, "--image", imagePath)
 		}
-		args = append(args, "--json", "--cd", cs.workDir, "-")
+		args = append(args, "--json", "--cd", cs.workDir, promptArg)
 	}
 	return args
 }

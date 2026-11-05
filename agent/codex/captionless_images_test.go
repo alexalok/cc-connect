@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,4 +98,84 @@ func TestAppServerSend_CaptionlessImagesHaveNoText(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Exercise Send through a real subprocess, including its argv and stdin.
+func TestExecSend_CaptionlessImagesDoNotRequireStdin(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, thread := range []string{"", "existing-thread"} {
+		for _, caption := range []string{"", " \n", "Explain\nthis photo"} {
+			t.Run(thread+"/"+caption, func(t *testing.T) {
+				cs, err := newCodexSession(context.Background(), executable,
+					[]string{"-test.run=^TestExecImagePromptHelper$", "--"}, t.TempDir(), "gpt-test", "", "low", thread, "",
+					[]string{"CC_IMAGE_PROMPT_HELPER=1", "CC_IMAGE_EXPECTED_CAPTION=" + caption}, "", "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer cs.Close()
+				if err := cs.Send(caption, "image", []core.ImageAttachment{{MimeType: "image/png", Data: []byte("photo")}}, nil); err != nil {
+					t.Fatal(err)
+				}
+				deadline := time.After(5 * time.Second)
+				for {
+					select {
+					case event := <-cs.Events():
+						if event.Type == core.EventError {
+							t.Fatalf("exec rejected image-only input: %v", event.Error)
+						}
+						if event.Type == core.EventResult && event.Done {
+							return
+						}
+					case <-deadline:
+						t.Fatal("exec did not complete")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestExecImagePromptHelper(t *testing.T) {
+	if os.Getenv("CC_IMAGE_PROMPT_HELPER") != "1" {
+		return
+	}
+	args := os.Args
+	for len(args) > 0 && args[0] != "--" {
+		args = args[1:]
+	}
+	if len(args) < 2 {
+		os.Exit(2)
+	}
+	args = args[1:]
+	stdin, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		os.Exit(2)
+	}
+	prompt := args[len(args)-1]
+	if prompt == "-" {
+		prompt = string(stdin)
+		// Codex rejects an empty required stdin prompt before processing images.
+		if strings.TrimSpace(prompt) == "" {
+			os.Stderr.WriteString("No prompt provided via stdin.")
+			os.Exit(1)
+		}
+	}
+	expected := os.Getenv("CC_IMAGE_EXPECTED_CAPTION")
+	if strings.TrimSpace(expected) == "" {
+		expected = ""
+	}
+	if prompt != expected {
+		os.Stderr.WriteString("caption changed")
+		os.Exit(1)
+	}
+	path := valueAfter(args, "--image")
+	if data, err := os.ReadFile(path); err != nil || string(data) != "photo" {
+		os.Stderr.WriteString("missing image")
+		os.Exit(1)
+	}
+	os.Stdout.WriteString("{\"type\":\"turn.completed\"}\n")
+	os.Exit(0)
 }
