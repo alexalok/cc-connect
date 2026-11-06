@@ -3833,3 +3833,23 @@ func TestCUJ_B17_ReasoningChangeWithWorkspaceDirectoryOverride(t *testing.T) {
 		})
 	}
 }
+
+// An approval answered in a second client must release the interactive reader,
+// deliver the rest of the answer, and allow another message in the same chat.
+func TestCUJ_C7_ApprovalAnsweredByAnotherClientContinuesConversation(t *testing.T) {
+	env := newCUJEnv(t)
+	defer env.engine.Stop()
+	resolved := make(chan struct{})
+	env.agent.setNextSessionEvents([]Event{
+		{Type: EventPermissionRequest, RequestID: "shared-approval", ToolName: "Bash", ToolInput: "test", PermissionResolved: resolved},
+		{Type: EventText, Content: "continued after desktop approval"},
+		{Type: EventResult, Done: true},
+	}, 0)
+	key := env.userSends("shared-user", "run the tests")
+	env.waitFor("permission prompt", 3*time.Second, func() bool { return env.sentContains("Bash") })
+	close(resolved)
+	env.waitFor("continued answer", 3*time.Second, func() bool { return env.sentContains("continued after desktop approval") })
+	env.waitFor("turn complete", 3*time.Second, func() bool { return !env.activeSession(key).Busy() })
+	env.userSends("shared-user", "next task")
+	env.waitFor("next answer", 3*time.Second, func() bool { return env.sentContains("ok") })
+}

@@ -415,7 +415,7 @@ func TestRefreshContextUsageFromRollout_UsesLastTokenCount(t *testing.T) {
 	}
 }
 
-func TestSend_WithImages_PassesImageArgsAndDefaultPrompt(t *testing.T) {
+func TestSend_WithImages_PassesImageArgsAndCaption(t *testing.T) {
 	workDir := t.TempDir()
 	binDir := filepath.Join(workDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -448,7 +448,7 @@ func TestSend_WithImages_PassesImageArgsAndDefaultPrompt(t *testing.T) {
 		Data:     []byte("png-bytes"),
 		FileName: "sample.png",
 	}
-	if err := cs.Send("", "", []core.ImageAttachment{img}, nil); err != nil {
+	if err := cs.Send("Describe this image", "", []core.ImageAttachment{img}, nil); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
