@@ -72,6 +72,15 @@ func responseLinks(text, workDir string) []responseAttachment {
 	return scanResponseLinks(text, workDir, nil)
 }
 
+// Syntax-only scans never access this path. Windows requires a drive-qualified
+// root before relative targets can be recognized; the actual cwd is used later.
+func responseLinkSyntaxRoot() string {
+	if filepath.Separator == '\\' {
+		return `C:\`
+	}
+	return "/"
+}
+
 func scanResponseLinks(text, workDir string, visit func(start, end int, label, target string)) []responseAttachment {
 	var out []responseAttachment
 	seen := map[string]bool{}
@@ -240,7 +249,7 @@ func responseListMarkerWidth(line string) int {
 func renderResponseAttachmentLinks(text string) string {
 	var out strings.Builder
 	end := 0
-	scanResponseLinks(text, "/", func(start, next int, label, target string) {
+	scanResponseLinks(text, responseLinkSyntaxRoot(), func(start, next int, label, target string) {
 		out.WriteString(text[end:start])
 		out.WriteString(label)
 		out.WriteString(" (")
@@ -463,7 +472,7 @@ func (e *Engine) openResponseAttachment(path, workDir string, limit int64) (*os.
 		if err != nil || !filepath.IsLocal(rel) {
 			continue
 		}
-		root, err := os.OpenRoot(dir)
+		root, err := openResponseRoot(dir)
 		if err != nil {
 			lastErr = err
 			continue
@@ -486,4 +495,48 @@ func (e *Engine) openResponseAttachment(path, workDir string, limit int64) (*os.
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("attachment is outside the workspace and configured artifact directories")
+}
+
+// Walk from the volume root through pinned directory handles. Lstat plus an
+// identity check on each opened directory rejects symlink components and swaps
+// between inspection and open. The caller uses the final handle for file
+// inspection and opening; the opened file then pins subsequent reads.
+func openResponseRoot(dir string) (*os.Root, error) {
+	dir = filepath.Clean(dir)
+	anchor := filepath.VolumeName(dir) + string(filepath.Separator)
+	current, err := os.OpenRoot(anchor)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(anchor, dir)
+	if err != nil {
+		current.Close()
+		return nil, err
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "." || part == "" {
+			continue
+		}
+		info, err := current.Lstat(part)
+		if err != nil {
+			current.Close()
+			return nil, err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			current.Close()
+			return nil, fmt.Errorf("attachment root contains a non-directory or symlink")
+		}
+		next, err := current.OpenRoot(part)
+		current.Close()
+		if err != nil {
+			return nil, err
+		}
+		opened, err := next.Stat(".")
+		if err != nil || !os.SameFile(info, opened) {
+			next.Close()
+			return nil, fmt.Errorf("attachment root changed during access")
+		}
+		current = next
+	}
+	return current, nil
 }

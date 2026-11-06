@@ -141,5 +141,9 @@ are eligible. Roots must be absolute directories controlled by the operator;
 choose artifact directories rather than broad roots such as `/`. Directory-
 relative file operations reject traversal and symlinks escaping those roots,
 including replacements during file access. Absolute symlinks are rejected too.
+Workspace/artifact root paths themselves must use physical directories with no
+symlink components (for example, use `/private/tmp` instead of `/tmp` on macOS).
+The bridge walks and pins those directories before reading files, rejecting
+root-path replacements with symlinks as well as links escaping inside a root.
 These directories are the bridge's upload boundary, not a replacement for the
 agent's sandbox. Unknown workspaces grant no implicit access to the bridge cwd.

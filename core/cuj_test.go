@@ -3857,7 +3857,7 @@ func TestCUJ_C7_ApprovalAnsweredByAnotherClientContinuesConversation(t *testing.
 // An agent replies with ordinary Markdown. Delivery belongs to the bridge:
 // no cc-connect command, no sender prefix, and no guessed active topic.
 func TestCUJ_A16_ResponseFilesWithoutAgentBridgeInstructions(t *testing.T) {
-	dir := t.TempDir()
+	dir := responseTestDir(t)
 	path := filepath.Join(dir, "report.txt")
 	if err := os.WriteFile(path, []byte("generated report"), 0600); err != nil {
 		t.Fatal(err)

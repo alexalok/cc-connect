@@ -81,7 +81,7 @@ func (p *responseFilePlatform) attachments() []responseFileDelivery {
 }
 
 func TestResponseAttachments_BoundsRoutingAndOptIn(t *testing.T) {
-	dir := t.TempDir()
+	dir := responseTestDir(t)
 	path := filepath.Join(dir, "report.txt")
 	if err := os.WriteFile(path, []byte("report"), 0600); err != nil {
 		t.Fatal(err)
@@ -118,7 +118,7 @@ func TestResponseAttachments_BoundsRoutingAndOptIn(t *testing.T) {
 }
 
 func TestResponseAttachments_InlineImageAndDocument(t *testing.T) {
-	dir := t.TempDir()
+	dir := responseTestDir(t)
 	path := filepath.Join(dir, "plot.png")
 	if err := os.WriteFile(path, []byte("\x89PNG\r\n\x1a\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ func (p *attachmentTopicPlatform) SendFile(ctx context.Context, reply any, file 
 	return p.files.SendFile(ctx, reply, file)
 }
 func TestResponseAttachments_MirrorRetriesWithoutRepeatingTextOrFiles(t *testing.T) {
-	dir := t.TempDir()
+	dir := responseTestDir(t)
 	var links []string
 	for _, name := range []string{"first.txt", "second.txt"} {
 		path := filepath.Join(dir, name)
@@ -183,7 +183,7 @@ func TestResponseAttachments_MirrorRetriesWithoutRepeatingTextOrFiles(t *testing
 }
 
 func TestResponseAttachments_MirrorDoesNotUploadOldOrUserLinks(t *testing.T) {
-	dir := t.TempDir()
+	dir := responseTestDir(t)
 	path := filepath.Join(dir, "report.txt")
 	_ = os.WriteFile(path, []byte("report"), 0600)
 	a := &topicMessageAgent{topicDiscoveryAgent: topicDiscoveryAgent{infos: []AgentSessionInfo{{ID: "native"}}}, messages: []SessionMessage{{ID: "old", Role: "assistant", Content: "[old](" + path + ")"}}}
@@ -220,19 +220,19 @@ func (a *attachmentWorkDirAgent) GetSessionWorkDir(_ context.Context, _ string, 
 	return a.dir, nil
 }
 func TestResponseAttachments_MirrorUsesNativeWorkingDirectory(t *testing.T) {
-	dir := t.TempDir()
+	dir := responseTestDir(t)
 	if err := os.WriteFile(filepath.Join(dir, "report.txt"), []byte("native report"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	a := &attachmentWorkDirAgent{topicMessageAgent: topicMessageAgent{topicDiscoveryAgent: topicDiscoveryAgent{infos: []AgentSessionInfo{{ID: "native"}}}}, dir: dir}
 	p := &attachmentTopicPlatform{topicMessagePlatform: topicMessagePlatform{topicSyncPlatform: topicSyncPlatform{target: "owner"}}}
-	e, w := newTopicSyncTest(t, a, p, filepath.Join(t.TempDir(), "sessions.json"))
+	e, w := newTopicSyncTest(t, a, p, filepath.Join(responseTestDir(t), "sessions.json"))
 	e.SetResponseAttachments(true, 1024)
 	if err := w.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	e.sessions.GetOrCreateActive(p.keys[0]).SetActiveProvider("saved-provider")
-	outside := filepath.Join(t.TempDir(), "private.txt")
+	outside := filepath.Join(responseTestDir(t), "private.txt")
 	if err := os.WriteFile(outside, []byte("outside workspace"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestResponseAttachments_MirrorUsesNativeWorkingDirectory(t *testing.T) {
 }
 
 func TestResponseAttachments_MissingMirrorFileDoesNotBlockLaterMessages(t *testing.T) {
-	dir := t.TempDir()
+	dir := responseTestDir(t)
 	path := filepath.Join(dir, "report.txt")
 	if err := os.WriteFile(path, []byte("report"), 0600); err != nil {
 		t.Fatal(err)
@@ -278,7 +278,7 @@ func TestResponseAttachments_MissingMirrorFileDoesNotBlockLaterMessages(t *testi
 }
 
 func TestResponseAttachments_ConcurrentConfiguration(t *testing.T) {
-	dir := t.TempDir()
+	dir := responseTestDir(t)
 	path := filepath.Join(dir, "report.txt")
 	if err := os.WriteFile(path, []byte("report"), 0600); err != nil {
 		t.Fatal(err)
@@ -319,7 +319,7 @@ func TestResponseAttachments_RenderPreservesExamplesAndNativeText(t *testing.T) 
 }
 
 func TestResponseAttachments_EnablingDoesNotRechunkOldMessages(t *testing.T) {
-	dir := t.TempDir()
+	dir := responseTestDir(t)
 	path := filepath.Join(dir, "report.txt")
 	if err := os.WriteFile(path, []byte("report"), 0600); err != nil {
 		t.Fatal(err)
@@ -344,7 +344,7 @@ func TestResponseAttachments_EnablingDoesNotRechunkOldMessages(t *testing.T) {
 }
 
 func TestResponseAttachments_MirrorKeepsRenderingWhenUploadsDisabled(t *testing.T) {
-	dir := t.TempDir()
+	dir := responseTestDir(t)
 	path := filepath.Join(dir, "report.txt")
 	body := strings.Repeat("[report]("+path+" \"A long descriptive title for the generated report\") ", 120)
 	a := &topicMessageAgent{topicDiscoveryAgent: topicDiscoveryAgent{infos: []AgentSessionInfo{{ID: "native"}}}, messages: []SessionMessage{{ID: "answer", Role: "assistant", Content: body}}}
@@ -390,7 +390,7 @@ func TestResponseLinks_WindowsDriveTargets(t *testing.T) {
 }
 
 func TestResponseAttachments_RejectsOutsideWorkspace(t *testing.T) {
-	parent := t.TempDir()
+	parent := responseTestDir(t)
 	workspace := filepath.Join(parent, "workspace")
 	if err := os.Mkdir(workspace, 0700); err != nil {
 		t.Fatal(err)
@@ -419,7 +419,7 @@ func TestResponseAttachments_RejectsOutsideWorkspace(t *testing.T) {
 }
 
 func TestResponseAttachments_ExplicitArtifactRootsAndReload(t *testing.T) {
-	workspace, artifacts := t.TempDir(), t.TempDir()
+	workspace, artifacts := responseTestDir(t), responseTestDir(t)
 	path := filepath.Join(artifacts, "report.txt")
 	if err := os.WriteFile(path, []byte("report"), 0600); err != nil {
 		t.Fatal(err)
@@ -443,7 +443,7 @@ func TestResponseAttachments_ExplicitArtifactRootsAndReload(t *testing.T) {
 }
 
 func TestResponseAttachments_BoundsMissingLinkFanout(t *testing.T) {
-	dir := t.TempDir()
+	dir := responseTestDir(t)
 	var links []string
 	for i := 0; i < 1000; i++ {
 		links = append(links, fmt.Sprintf("[file](missing-%d.txt)", i))
@@ -458,8 +458,64 @@ func TestResponseAttachments_BoundsMissingLinkFanout(t *testing.T) {
 	}
 }
 
+func TestResponseAttachments_RejectsSymlinkedRootAndAncestor(t *testing.T) {
+	parent := responseTestDir(t)
+	outside := responseTestDir(t)
+	if err := os.Mkdir(filepath.Join(outside, "child"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(outside, "report.txt"), filepath.Join(outside, "child", "report.txt")} {
+		if err := os.WriteFile(path, []byte("outside workspace"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := filepath.Join(parent, "approved")
+	if err := os.Symlink(outside, root); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	p := &responseFilePlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("project", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	defer e.Stop()
+	e.SetResponseAttachments(true, 1024)
+	for _, dir := range []string{root, filepath.Join(root, "child")} {
+		e.deliverResponseAttachments(context.Background(), p, "topic", "[report](report.txt)", dir)
+	}
+	e.SetResponseAttachments(true, 1024, root)
+	e.deliverResponseAttachments(context.Background(), p, "topic", "[report]("+filepath.Join(root, "report.txt")+")", "")
+	if len(p.attachments()) != 0 {
+		t.Fatal("uploaded through a symlinked root path")
+	}
+	if len(p.getSent()) != 3 {
+		t.Fatal("missing root rejection notices")
+	}
+}
+
+func TestResponseAttachments_RelativeLinkSyntaxOnHost(t *testing.T) {
+	input := "[report](output/report.pdf)"
+	if got := renderResponseAttachmentLinks(input); got == input {
+		t.Fatal("relative local link was not rendered")
+	}
+	dir := responseTestDir(t)
+	if err := os.Mkdir(filepath.Join(dir, "output"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "output", "report.pdf"), []byte("report"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := &attachmentWorkDirAgent{topicMessageAgent: topicMessageAgent{topicDiscoveryAgent: topicDiscoveryAgent{infos: []AgentSessionInfo{{ID: "native"}}}, messages: []SessionMessage{{ID: "answer", Role: "assistant", Content: input}}}, dir: dir}
+	p := &attachmentTopicPlatform{topicMessagePlatform: topicMessagePlatform{topicSyncPlatform: topicSyncPlatform{target: "owner"}}}
+	e, w := newTopicSyncTest(t, a, p, filepath.Join(dir, "sessions.json"))
+	e.SetResponseAttachments(true, 1024)
+	if err := w.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.files.attachments()) != 1 {
+		t.Fatal("relative native link was not uploaded")
+	}
+}
+
 func TestResponseAttachments_MirrorLimitSurvivesPollAndRestart(t *testing.T) {
-	dir := t.TempDir()
+	dir := responseTestDir(t)
 	var links []string
 	for i := 0; i < maxResponseAttachments+2; i++ {
 		path := filepath.Join(dir, fmt.Sprintf("report-%d.txt", i))
@@ -505,4 +561,13 @@ func TestResponseLinks_NestedListsAndTheirCodeBlocks(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("nested list links: got %#v want %#v", got, want)
 	}
+}
+
+func responseTestDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
