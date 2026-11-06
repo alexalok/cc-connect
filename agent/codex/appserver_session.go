@@ -21,15 +21,18 @@ import (
 )
 
 type rpcResponseEnvelope struct {
-	ID     any             `json:"id"`
-	Result json.RawMessage `json:"result"`
-	Error  *rpcError       `json:"error"`
+	ID             any             `json:"id"`
+	Result         json.RawMessage `json:"result"`
+	Error          *rpcError       `json:"error"`
+	transportError error
 }
 
 type rpcNotificationEnvelope struct {
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
 }
+
+func (e *rpcError) Error() string { return strings.TrimSpace(e.Message) }
 
 type rpcError struct {
 	Code    int    `json:"code"`
@@ -171,17 +174,28 @@ type appServerSession struct {
 
 	approvalsMu      sync.Mutex
 	pendingApprovals map[string]chan core.PermissionResult
+	approvalDone     map[string]chan struct{}
 
 	threadID atomic.Value
 	alive    atomic.Bool
 
-	closeOnce sync.Once
-	wg        sync.WaitGroup
+	eventMu      sync.Mutex
+	eventsClosed bool
+	closeOnce    sync.Once
+	wg           sync.WaitGroup
 
 	stateMu      sync.Mutex
 	pendingMsgs  []string
 	currentTurn  string
 	preambleSent bool
+
+	sharedMu         sync.Mutex
+	sharedSubmitting bool
+	sharedQueue      []sharedMessage
+	sharedQueueBytes int
+	sharedTurn       string
+	requestedModel   string
+	requestedEffort  string
 
 	runtimeMu sync.RWMutex
 	usage     *core.UsageReport
@@ -194,6 +208,22 @@ const (
 )
 
 func newAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []string, url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string, extraEnv []string, codexHome string, systemPrompt string, appendPrompt string) (*appServerSession, error) {
+	if err := validateAppServerURL(url); err != nil {
+		return nil, err
+	}
+	if strings.HasPrefix(url, "unix://") {
+		if mode != "inherit" {
+			return nil, fmt.Errorf("codex shared server requires mode = \"inherit\"; native approval and sandbox policies apply")
+		}
+		if len(cliExtraArgs) > 0 || baseURL != "" || modelProvider != "" {
+			return nil, fmt.Errorf("codex shared server owns its CLI arguments and provider configuration")
+		}
+		var err error
+		workDir, err = filepath.Abs(workDir)
+		if err != nil {
+			return nil, fmt.Errorf("codex shared server working directory: %w", err)
+		}
+	}
 	sessionCtx, cancel := context.WithCancel(ctx)
 	s := &appServerSession{
 		cliBin:           cliBin,
@@ -201,6 +231,8 @@ func newAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []stri
 		url:              url,
 		workDir:          workDir,
 		model:            model,
+		requestedModel:   model,
+		requestedEffort:  effort,
 		effort:           effort,
 		mode:             mode,
 		baseURL:          baseURL,
@@ -253,6 +285,9 @@ func appServerListenURL(url string) string {
 }
 
 func (s *appServerSession) connect() error {
+	if strings.HasPrefix(s.url, "unix://") {
+		return s.connectUnixSocket(strings.TrimPrefix(s.url, "unix://"))
+	}
 	args := []string{"app-server"}
 	// With url "stdio://" the session speaks JSON-RPC over the stdio pipes.
 	// Pass no --listen flag in that case: on codex 0.152+ a --listen value
@@ -354,6 +389,9 @@ func (s *appServerSession) initialize() error {
 func (s *appServerSession) ensureThread(resumeID string) error {
 	if resumeID != "" && resumeID != core.ContinueSession {
 		params := s.threadRequestParams()
+		if s.isShared() {
+			params = map[string]any{}
+		}
 		params["threadId"] = resumeID
 
 		var resp threadResumeResponse
@@ -387,8 +425,14 @@ func (s *appServerSession) threadRequestParams() map[string]any {
 		"experimentalRawEvents":  false,
 		"persistExtendedHistory": false,
 	}
+	if s.isShared() {
+		params["cwd"] = s.GetWorkDir()
+	}
 	if model := s.GetModel(); model != "" {
 		params["model"] = model
+	}
+	if effort := s.requestedEffort; s.isShared() && effort != "" {
+		params["config"] = map[string]any{"model_reasoning_effort": effort}
 	}
 	if approval, sandbox := appServerModeSettings(s.mode); approval != "" {
 		params["approvalPolicy"] = approval
@@ -401,6 +445,8 @@ func (s *appServerSession) threadRequestParams() map[string]any {
 
 func appServerModeSettings(mode string) (approval string, sandbox string) {
 	switch normalizeMode(mode) {
+	case "inherit":
+		return "", ""
 	case "auto-edit", "full-auto":
 		return "never", "workspace-write"
 	case "yolo":
@@ -529,7 +575,7 @@ func (s *appServerSession) send(prompt string, messageID string, images []core.I
 		// Persist the origin in native UI events so the transcript mirror can
 		// distinguish bot turns from other clients without matching user text.
 		"turnTrigger":         mirrorTurnOrigin,
-		"clientUserMessageId": fmt.Sprintf("%s:%s:%d", mirrorTurnOrigin, messageID, time.Now().UnixNano()),
+		"clientUserMessageId": s.clientMessageID(messageID),
 	}
 	if model := s.GetModel(); model != "" {
 		params["model"] = model
@@ -541,14 +587,42 @@ func (s *appServerSession) send(prompt string, messageID string, images []core.I
 		params["approvalPolicy"] = approval
 	}
 
+	if s.isShared() {
+		// Attaching must not replace the desktop thread's approval policy or
+		// cached runtime defaults. Only explicit model/effort options override.
+		delete(params, "approvalPolicy")
+		delete(params, "model")
+		delete(params, "effort")
+		if s.requestedModel != "" {
+			params["model"] = s.requestedModel
+		}
+		if s.requestedEffort != "" {
+			params["effort"] = s.requestedEffort
+		}
+		if err := s.beginSharedTurn(); err != nil {
+			return err
+		}
+	}
 	var resp turnStartResponse
 	if err := s.request("turn/start", params, &resp); err != nil {
+		if s.isShared() {
+			s.finishSharedTurn("")
+			return s.sharedSubmissionError("turn/start", err)
+		}
 		return fmt.Errorf("codex app-server turn/start: %w", err)
 	}
 	if resp.Turn.ID == "" {
+		if s.isShared() {
+			s.finishSharedTurn("")
+			return s.sharedSubmissionError("turn/start", fmt.Errorf("empty turn id"))
+		}
 		return fmt.Errorf("codex app-server turn/start returned empty turn id")
 	}
 
+	if s.isShared() {
+		s.finishSharedTurn(resp.Turn.ID)
+		return nil
+	}
 	s.stateMu.Lock()
 	s.currentTurn = resp.Turn.ID
 	s.pendingMsgs = s.pendingMsgs[:0]
@@ -596,12 +670,23 @@ func (s *appServerSession) RespondPermission(requestID string, result core.Permi
 }
 
 func (s *appServerSession) handleServerRequest(probe map[string]json.RawMessage) {
+	if s.isShared() {
+		s.routeSharedMessage(sharedMessage{request: probe})
+		return
+	}
+	s.handleServerRequestDirect(probe)
+}
+
+func (s *appServerSession) handleServerRequestDirect(probe map[string]json.RawMessage) {
 	rawID := probe["id"]
 	var method string
 	if err := json.Unmarshal(probe["method"], &method); err != nil {
 		return
 	}
 	params := probe["params"]
+	if s.isOtherSharedThread(params) {
+		return
+	}
 
 	switch method {
 	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
@@ -644,34 +729,23 @@ func (s *appServerSession) handleApprovalRequest(rawID json.RawMessage, method s
 		}
 	}
 
-	ch := make(chan core.PermissionResult, 1)
-	s.approvalsMu.Lock()
-	s.pendingApprovals[requestID] = ch
-	s.approvalsMu.Unlock()
+	ch, done := s.registerApproval(requestID)
 
 	s.flushPendingAsThinking()
 	s.emit(core.Event{
-		Type:         core.EventPermissionRequest,
-		RequestID:    requestID,
-		ToolName:     toolName,
-		ToolInput:    toolInput,
-		ToolInputRaw: params,
+		Type:               core.EventPermissionRequest,
+		PermissionResolved: done,
+		RequestID:          requestID,
+		ToolName:           toolName,
+		ToolInput:          toolInput,
+		ToolInputRaw:       params,
 	})
 
 	go func() {
-		timer := time.NewTimer(5 * time.Minute)
-		defer timer.Stop()
-		var result core.PermissionResult
-		select {
-		case result = <-ch:
-		case <-s.ctx.Done():
-			result = core.PermissionResult{Behavior: "deny"}
-		case <-timer.C:
-			result = core.PermissionResult{Behavior: "deny"}
+		result, reply := s.awaitApproval(requestID, ch, done)
+		if !reply {
+			return
 		}
-		s.approvalsMu.Lock()
-		delete(s.pendingApprovals, requestID)
-		s.approvalsMu.Unlock()
 
 		decision := "decline"
 		if strings.EqualFold(result.Behavior, "allow") {
@@ -691,34 +765,23 @@ func (s *appServerSession) handlePermissionsApproval(rawID json.RawMessage, para
 		return
 	}
 
-	ch := make(chan core.PermissionResult, 1)
-	s.approvalsMu.Lock()
-	s.pendingApprovals[requestID] = ch
-	s.approvalsMu.Unlock()
+	ch, done := s.registerApproval(requestID)
 
 	s.flushPendingAsThinking()
 	s.emit(core.Event{
-		Type:         core.EventPermissionRequest,
-		RequestID:    requestID,
-		ToolName:     "Permissions",
-		ToolInput:    appServerJSON(params),
-		ToolInputRaw: params,
+		Type:               core.EventPermissionRequest,
+		PermissionResolved: done,
+		RequestID:          requestID,
+		ToolName:           "Permissions",
+		ToolInput:          appServerJSON(params),
+		ToolInputRaw:       params,
 	})
 
 	go func() {
-		timer := time.NewTimer(5 * time.Minute)
-		defer timer.Stop()
-		var result core.PermissionResult
-		select {
-		case result = <-ch:
-		case <-s.ctx.Done():
-			result = core.PermissionResult{Behavior: "deny"}
-		case <-timer.C:
-			result = core.PermissionResult{Behavior: "deny"}
+		result, reply := s.awaitApproval(requestID, ch, done)
+		if !reply {
+			return
 		}
-		s.approvalsMu.Lock()
-		delete(s.pendingApprovals, requestID)
-		s.approvalsMu.Unlock()
 
 		if strings.EqualFold(result.Behavior, "allow") {
 			perms := params["permissions"]
@@ -759,35 +822,24 @@ func (s *appServerSession) handleRequestUserInput(rawID json.RawMessage, paramsR
 	}
 
 	rawInput := appServerRequestUserInputRawInput(params)
-	ch := make(chan core.PermissionResult, 1)
-	s.approvalsMu.Lock()
-	s.pendingApprovals[requestID] = ch
-	s.approvalsMu.Unlock()
+	ch, done := s.registerApproval(requestID)
 
 	s.flushPendingAsThinking()
 	s.emit(core.Event{
-		Type:         core.EventPermissionRequest,
-		RequestID:    requestID,
-		ToolName:     "AskUserQuestion",
-		ToolInput:    appServerJSON(rawInput),
-		ToolInputRaw: rawInput,
-		Questions:    questions,
+		Type:               core.EventPermissionRequest,
+		PermissionResolved: done,
+		RequestID:          requestID,
+		ToolName:           "AskUserQuestion",
+		ToolInput:          appServerJSON(rawInput),
+		ToolInputRaw:       rawInput,
+		Questions:          questions,
 	})
 
 	go func() {
-		timer := time.NewTimer(5 * time.Minute)
-		defer timer.Stop()
-		var result core.PermissionResult
-		select {
-		case result = <-ch:
-		case <-s.ctx.Done():
-			result = core.PermissionResult{Behavior: "deny"}
-		case <-timer.C:
-			result = core.PermissionResult{Behavior: "deny"}
+		result, reply := s.awaitApproval(requestID, ch, done)
+		if !reply {
+			return
 		}
-		s.approvalsMu.Lock()
-		delete(s.pendingApprovals, requestID)
-		s.approvalsMu.Unlock()
 
 		response := appServerRequestUserInputResponseFromResult(params.Questions, result)
 		_ = s.writeJSON(map[string]any{
@@ -922,12 +974,8 @@ func appServerRequestUserInputAnswerValues(raw any) []string {
 func (s *appServerSession) rejectPendingApprovals(err error) {
 	s.approvalsMu.Lock()
 	defer s.approvalsMu.Unlock()
-	for id, ch := range s.pendingApprovals {
-		delete(s.pendingApprovals, id)
-		select {
-		case ch <- core.PermissionResult{Behavior: "deny"}:
-		default:
-		}
+	for id := range s.pendingApprovals {
+		s.resolveApprovalLocked(id)
 	}
 }
 
@@ -1005,6 +1053,9 @@ func (s *appServerSession) Close() error {
 	}
 
 	s.closeOnce.Do(func() {
+		s.eventMu.Lock()
+		defer s.eventMu.Unlock()
+		s.eventsClosed = true
 		close(s.events)
 	})
 	return nil
@@ -1129,7 +1180,21 @@ func (s *appServerSession) handleResponse(resp rpcResponseEnvelope) {
 }
 
 func (s *appServerSession) handleNotification(method string, paramsRaw json.RawMessage) {
+	if s.isShared() {
+		s.routeSharedMessage(sharedMessage{method: method, params: paramsRaw})
+		return
+	}
+	s.handleNotificationDirect(method, paramsRaw)
+}
+
+func (s *appServerSession) handleNotificationDirect(method string, paramsRaw json.RawMessage) {
+	if s.isOtherSharedThread(paramsRaw) {
+		return
+	}
+
 	switch method {
+	case "serverRequest/resolved":
+		s.resolveServerRequest(paramsRaw)
 	case "turn/started":
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
@@ -1179,7 +1244,7 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 				Type string `json:"type"`
 			} `json:"status"`
 		}
-		if err := json.Unmarshal(paramsRaw, &notif); err == nil && notif.Status.Type == "idle" {
+		if err := json.Unmarshal(paramsRaw, &notif); err == nil && notif.Status.Type == "idle" && !s.isShared() {
 			// In codex 0.125+, thread going idle signals turn completion.
 			s.completeTurn()
 		}
@@ -1608,10 +1673,26 @@ func (s *appServerSession) flushPendingAsText() {
 }
 
 func (s *appServerSession) emit(event core.Event) {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	if s.eventsClosed {
+		return
+	}
 	select {
 	case s.events <- event:
 	default:
-		slog.Warn("codex appserver: event channel full, dropping event", "type", event.Type)
+		if s.isShared() {
+			// Stop this subscriber rather than silently lose an approval or final
+			// result. Leave a terminal error for the engine after queued output.
+			select {
+			case <-s.events:
+			default:
+			}
+			s.events <- core.Event{Type: core.EventError, Error: fmt.Errorf("codex shared server event buffer exhausted; reconnect to read the saved conversation")}
+			s.abortTransport()
+		} else {
+			slog.Warn("codex appserver: event channel full, dropping event", "type", event.Type)
+		}
 	}
 }
 
@@ -1628,7 +1709,7 @@ func (s *appServerSession) rejectPending(err error) {
 	for id, ch := range s.pending {
 		delete(s.pending, id)
 		select {
-		case ch <- rpcResponseEnvelope{ID: id, Error: &rpcError{Message: err.Error()}}:
+		case ch <- rpcResponseEnvelope{ID: id, transportError: err}:
 		default:
 		}
 	}
@@ -1648,6 +1729,7 @@ func (s *appServerSession) requestWithTimeout(method string, params any, out any
 	}
 	s.pending[id] = ch
 	s.pendingMu.Unlock()
+	defer func() { s.pendingMu.Lock(); delete(s.pending, id); s.pendingMu.Unlock() }()
 
 	payload := map[string]any{
 		"jsonrpc": "2.0",
@@ -1676,8 +1758,11 @@ func (s *appServerSession) requestWithTimeout(method string, params any, out any
 	ctxDone := s.contextDone()
 	select {
 	case resp := <-ch:
+		if resp.transportError != nil {
+			return resp.transportError
+		}
 		if resp.Error != nil {
-			return fmt.Errorf("%s", strings.TrimSpace(resp.Error.Message))
+			return resp.Error
 		}
 		if out != nil {
 			if err := json.Unmarshal(resp.Result, out); err != nil {

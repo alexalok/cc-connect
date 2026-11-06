@@ -56,10 +56,18 @@ func (a *Agent) ArchiveSessionWithProvider(ctx context.Context, sessionID, provi
 			return fmt.Errorf("codex: archive: resolve profile: %w", err)
 		}
 	}
+	url := "stdio://"
+	if a.backend == "app_server" && strings.HasPrefix(a.appServerURL, "unix://") {
+		if providerName != "" {
+			a.mu.RUnlock()
+			return fmt.Errorf("codex shared server cannot archive through a different provider")
+		}
+		url = a.appServerURL
+	}
 	s := &appServerSession{
 		cliBin:           a.cmd,
 		cliExtraArgs:     append([]string(nil), a.cliExtraArgs...),
-		url:              "stdio://",
+		url:              url,
 		workDir:          a.workDir,
 		codexHome:        codexHome,
 		extraEnv:         extraEnv,

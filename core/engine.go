@@ -3788,7 +3788,9 @@ found:
 		}
 
 		state.mu.Lock()
-		state.pending = nil
+		if state.pending == pending {
+			state.pending = nil
+		}
 		state.mu.Unlock()
 		pending.resolve()
 		return true
@@ -3834,7 +3836,9 @@ found:
 	}
 
 	state.mu.Lock()
-	state.pending = nil
+	if state.pending == pending {
+		state.pending = nil
+	}
 	state.mu.Unlock()
 	pending.resolve()
 
@@ -6346,6 +6350,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			e.showAsyncUserInput(state, p, replyCtx, event)
 
 		case EventPermissionRequest:
+			select {
+			case <-event.PermissionResolved:
+				continue
+			default:
+			}
 			// extension_select is a Pi extension UI request routed via the
 			// AskUserQuestion rich-card path. The pi session adapter populates
 			// event.Questions so it renders as a button card (same UX as Claude
@@ -6428,7 +6437,16 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				idleTimer.Stop()
 			}
 
-			<-pending.Resolved
+			select {
+			case <-pending.Resolved:
+			case <-event.PermissionResolved:
+				state.mu.Lock()
+				if state.pending == pending {
+					state.pending = nil
+				}
+				state.mu.Unlock()
+				pending.resolve()
+			}
 			updateStatus("")
 			slog.Info("permission resolved", "request_id", event.RequestID)
 
@@ -11283,7 +11301,13 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 		if cancelErr != nil {
 			slog.Warn("agent session CancelTurn failed, falling back to Close",
 				"session_key", sessionKey, "error", cancelErr)
-			// Fall through to normal cleanup below.
+			// Cancellation ran without interactiveMu. Another cleanup or a
+			// replacement session may have taken ownership in the meantime.
+			e.interactiveMu.Lock()
+			if e.interactiveStates[sessionKey] != state {
+				e.interactiveMu.Unlock()
+				return true
+			}
 			goto normalCleanup
 		}
 
