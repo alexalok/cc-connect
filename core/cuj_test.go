@@ -3724,6 +3724,116 @@ func testCUJNewTopicHistory(t *testing.T) {
 	}
 }
 
+// cujReasoningAgent reports the native conversation and effort used for each
+// turn, so the journey detects both lost context and stale settings.
+type cujReasoningAgent struct {
+	stubAgent
+	mu     sync.Mutex
+	effort string
+	starts int
+}
+
+func (a *cujReasoningAgent) SetReasoningEffort(effort string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.effort = effort
+}
+func (a *cujReasoningAgent) GetReasoningEffort() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.effort
+}
+func (a *cujReasoningAgent) AvailableReasoningEfforts() []string {
+	return []string{"low", "medium", "high"}
+}
+func (a *cujReasoningAgent) StartSession(_ context.Context, id string) (AgentSession, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.starts++
+	if id == "" {
+		id = fmt.Sprintf("native-%d", a.starts)
+	}
+	s := newCUJAgentSession()
+	s.reply = fmt.Sprintf("conversation=%s effort=%s", id, a.effort)
+	return &cujDirectorySession{cujAgentSession: s, id: id}, nil
+}
+
+func TestCUJ_B17_ReasoningChangePreservesConversation(t *testing.T) {
+	for _, idle := range []bool{false, true} {
+		t.Run(fmt.Sprintf("released=%v", idle), func(t *testing.T) {
+			env := newCUJEnv(t)
+			env.engine.agent = &cujReasoningAgent{effort: "low"}
+			t.Cleanup(func() { _ = env.engine.Stop() })
+			key := env.userSends("reasoning", "Remember the original task")
+			waitReply := func(want string) {
+				env.waitFor(want, 3*time.Second, func() bool {
+					return strings.Contains(strings.Join(env.plat.getSent(), "\n"), want) && !env.engine.sessions.GetOrCreateActive(key).Busy()
+				})
+			}
+			waitReply("conversation=native-1 effort=low")
+			if idle {
+				env.engine.cleanupInteractiveState(env.engine.interactiveKeyForSessionKey(key))
+			}
+			env.userSends("reasoning", "/reasoning medium")
+			waitReply(env.engine.i18n.Tf(MsgReasoningChanged, "medium"))
+			env.userSends("reasoning", "Continue the original task")
+			waitReply("conversation=native-1 effort=medium")
+			env.userSends("reasoning", "/history")
+			if !strings.Contains(env.lastSent(), "Remember the original task") {
+				t.Fatalf("lost conversation history: %s", env.lastSent())
+			}
+		})
+	}
+}
+
+func TestCUJ_B17_ReasoningChangeWithWorkspaceDirectoryOverride(t *testing.T) {
+	for _, card := range []bool{false, true} {
+		t.Run(fmt.Sprintf("card=%v", card), func(t *testing.T) {
+			env := newCUJEnv(t)
+			env.plat.n = "feishu"
+			e := env.engine
+			t.Cleanup(func() { _ = e.Stop() })
+			workspace := normalizeWorkspacePath(t.TempDir())
+			override := normalizeWorkspacePath(t.TempDir())
+			e.SetMultiWorkspace(t.TempDir(), filepath.Join(t.TempDir(), "bindings.json"))
+			e.workspaceBindings.Bind("project:test", "C-reasoning-override", "chan", workspace)
+			const key = "feishu:C-reasoning-override:u1"
+			store := NewProjectStateStore(filepath.Join(t.TempDir(), "state.json"))
+			store.SetWorkspaceDirOverride(workspace+":"+key, override)
+			e.SetProjectStateStore(store)
+			originalAgent := &cujReasoningAgent{effort: "high"}
+			originalWS := e.workspacePool.GetOrCreate(workspace)
+			originalWS.agent, originalWS.sessions = originalAgent, NewSessionManager("")
+			activeWS := e.workspacePool.GetOrCreate(override)
+			activeWS.agent, activeWS.sessions = &cujReasoningAgent{effort: "low"}, NewSessionManager("")
+			send := func(content string) {
+				e.ReceiveMessage(env.plat, &Message{SessionKey: key, Platform: "feishu", UserID: "u1", Content: content, ReplyCtx: "ctx"})
+			}
+			waitReply := func(want string) {
+				env.waitFor(want, 3*time.Second, func() bool {
+					return strings.Contains(strings.Join(env.plat.getSent(), "\n"), want) && !activeWS.sessions.GetOrCreateActive(key).Busy()
+				})
+			}
+			send("Remember the override task")
+			waitReply("conversation=native-1 effort=low")
+			if card {
+				e.handleCardNav("act:/reasoning 2", key)
+			} else {
+				send("/reasoning medium")
+			}
+			send("Continue the override task")
+			waitReply("conversation=native-1 effort=medium")
+			send("/history")
+			if !strings.Contains(env.lastSent(), "Remember the override task") {
+				t.Fatalf("lost override history: %s", env.lastSent())
+			}
+			if originalAgent.GetReasoningEffort() != "high" {
+				t.Fatal("changed the binding's original agent")
+			}
+		})
+	}
+}
+
 // An approval answered in a second client must release the interactive reader,
 // deliver the rest of the answer, and allow another message in the same chat.
 func TestCUJ_C7_ApprovalAnsweredByAnotherClientContinuesConversation(t *testing.T) {

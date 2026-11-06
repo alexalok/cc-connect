@@ -10906,7 +10906,7 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 }
 
 func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
-	agent, sessions, _, err := e.commandContext(p, msg)
+	agent, _, interactiveKey, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
@@ -10959,7 +10959,7 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 			e.replyWithButtons(p, msg.ReplyCtx, sb.String(), buttons)
 			return
 		}
-		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCard())
+		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCard(agent))
 		return
 	}
 
@@ -10982,14 +10982,27 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 	}
 
 	switcher.SetReasoningEffort(target)
-	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
-
-	s := sessions.GetOrCreateActive(msg.SessionKey)
-	s.SetAgentSessionID("", "")
-	s.ClearHistory()
-	sessions.Save()
+	// Restart the live agent to pick up the effort, retaining the native
+	// conversation ID and history so the next message resumes it.
+	e.cleanupReasoningSession(msg.SessionKey, interactiveKey)
 
 	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningChanged, target))
+}
+
+// cleanupReasoningSession retires the live connection without resetting its
+// stored conversation. A workspace /dir override keeps the binding key for
+// settings, but message dispatch stores the live state under the effective dir.
+func (e *Engine) cleanupReasoningSession(sessionKey, interactiveKey string) {
+	liveKey := interactiveKey
+	if e.multiWorkspace {
+		if workspace := workspaceFromInteractiveKey(interactiveKey, sessionKey); workspace != "" {
+			liveKey = e.resolveChannelWorkDir(workspace, interactiveKey) + ":" + sessionKey
+		}
+	}
+	e.cleanupInteractiveState(interactiveKey)
+	if liveKey != interactiveKey {
+		e.cleanupInteractiveState(liveKey)
+	}
 }
 
 func (e *Engine) reasoningUsage(efforts []string) string {
@@ -13145,7 +13158,8 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	case "/model":
 		return e.renderModelCard(sessionKey)
 	case "/reasoning":
-		return e.renderReasoningCard()
+		agent, _ := e.sessionContextForKey(sessionKey)
+		return e.renderReasoningCard(agent)
 	case "/mode":
 		return e.renderModeCard()
 	case "/lang":
@@ -13328,7 +13342,8 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if args == "" {
 			return
 		}
-		switcher, ok := e.agent.(ReasoningEffortSwitcher)
+		agent, _ := e.sessionContextForKey(sessionKey)
+		switcher, ok := agent.(ReasoningEffortSwitcher)
 		if !ok {
 			return
 		}
@@ -13340,11 +13355,7 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		for _, effort := range efforts {
 			if effort == target {
 				switcher.SetReasoningEffort(target)
-				e.cleanupInteractiveState(interactiveKey)
-				s := e.sessions.GetOrCreateActive(sessionKey)
-				s.SetAgentSessionID("", "")
-				s.ClearHistory()
-				e.sessions.Save()
+				e.cleanupReasoningSession(sessionKey, interactiveKey)
 				return
 			}
 		}
@@ -14152,8 +14163,8 @@ func (e *Engine) renderModelSwitchResultCard(target string, err error) *Card {
 		Build()
 }
 
-func (e *Engine) renderReasoningCard() *Card {
-	switcher, ok := e.agent.(ReasoningEffortSwitcher)
+func (e *Engine) renderReasoningCard(agent Agent) *Card {
+	switcher, ok := agent.(ReasoningEffortSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleReasoning), "orange", e.i18n.T(MsgReasoningNotSupported))
 	}

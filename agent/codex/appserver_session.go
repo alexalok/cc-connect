@@ -465,7 +465,11 @@ func (s *appServerSession) applyThreadRuntimeState(workDir, model string, effort
 	if m := strings.TrimSpace(model); m != "" {
 		s.model = m
 	}
-	s.effort = normalizeRuntimeReasoningEffort(stringValue(effort))
+	// An explicit selection must survive resume: turn/start sends this effort
+	// to the server even if the saved thread still reports its previous value.
+	if s.effort == "" {
+		s.effort = normalizeRuntimeReasoningEffort(stringValue(effort))
+	}
 }
 
 func (s *appServerSession) refreshUsage(ctx context.Context) error {

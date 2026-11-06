@@ -50,6 +50,10 @@ Each user gets an independent session with full conversation context. Manage ses
 | `/queue <message>` | Queue a follow-up, or start immediately when idle; supports attachments |
 | `/help` | Show available commands |
 
+`/reasoning <level>` keeps the current conversation and its history. The live
+agent connection is restarted so your next message resumes the same conversation
+with the selected effort. Changing effort during a running turn stops that turn.
+
 During a session, the agent may request tool permissions. Reply **allow** / **deny** / **allow all**.
 
 For Codex, `/list` normally shows sessions in the configured working directory.
