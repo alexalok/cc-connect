@@ -368,8 +368,11 @@ type Engine struct {
 	tts                   *TTSCfg
 	display               DisplayCfg
 	injectSender          bool
-	attachmentSendEnabled bool
+	attachmentSendEnabled atomic.Bool
 	startedAt             time.Time
+
+	responseAttachments     atomic.Bool
+	responseAttachmentLimit atomic.Int64
 
 	providerSaveFunc        func(providerName string) error
 	providerAddSaveFunc     func(p ProviderConfig) error
@@ -809,7 +812,6 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 		ctx:                   ctx,
 		cancel:                cancel,
 		i18n:                  NewI18n(lang),
-		attachmentSendEnabled: true,
 		display:               DisplayCfg{Mode: "full", ThinkingMessages: true, ThinkingMaxLen: defaultThinkingMaxLen, ToolMaxLen: defaultToolMaxLen, ToolMessages: true, CardMode: "legacy"},
 		commands:              NewCommandRegistry(),
 		skills:                NewSkillRegistry(),
@@ -831,6 +833,8 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 		shellFlag:             defaultShellFlag(),
 		pendingRestartTimeout: defaultPendingRestartTimeout,
 	}
+
+	e.attachmentSendEnabled.Store(true)
 
 	if ag != nil {
 		e.sessions.InvalidateForAgent(ag.Name())
@@ -1092,7 +1096,7 @@ func (e *Engine) SetInjectSender(v bool) {
 
 // SetAttachmentSendEnabled controls whether side-channel image/file delivery is allowed.
 func (e *Engine) SetAttachmentSendEnabled(v bool) {
-	e.attachmentSendEnabled = v
+	e.attachmentSendEnabled.Store(v)
 }
 
 // SetObserveConfig enables terminal session observation.
@@ -5454,9 +5458,11 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 
 				if fullResponse != "" {
 					for _, chunk := range SplitMessageCodeFenceAware(fullResponse, maxPlatformMessageLen) {
-						e.send(p, replyCtx, chunk)
+						e.sendForWorkspace(p, replyCtx, chunk, workspaceDir)
 					}
 				}
+
+				e.deliverResponseAttachments(ctx, p, replyCtx, fullResponse, responseWorkDir(agentSession, e.agent, workspaceDir))
 
 				// Safety note: concurrent writes to session.History by the
 				// unsolicited reader and a foreground turn cannot overlap.
@@ -5662,6 +5668,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	state.mu.Lock()
 	workspaceDir := state.workspaceDir
 	replyAgent := state.agent
+	replySession := state.agentSession
 	if replyAgent == nil {
 		replyAgent = e.agent
 	}
@@ -6867,6 +6874,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 			if elapsed := time.Since(replyStart); elapsed >= slowPlatformSend {
 				slog.Warn("slow final reply send", "platform", p.Name(), "elapsed", elapsed, "response_len", len(fullResponse))
+			}
+			if !isSilent {
+				e.deliverResponseAttachments(e.ctx, p, replyCtx, baseResponse, responseWorkDir(replySession, replyAgent, workspaceDir))
 			}
 
 			// TTS: async voice reply if enabled (skipped for silent replies)
@@ -12163,7 +12173,7 @@ func (e *Engine) SendToSessionWithOptions(sessionKey, message string, images []I
 	if message == "" && len(images) == 0 && len(files) == 0 {
 		return fmt.Errorf("message or attachment is required")
 	}
-	if (len(images) > 0 || len(files) > 0) && !e.attachmentSendEnabled {
+	if (len(images) > 0 || len(files) > 0) && !e.attachmentSendEnabled.Load() {
 		return ErrAttachmentSendDisabled
 	}
 
@@ -12241,7 +12251,7 @@ func (e *Engine) SendToSessionInWorkDir(sessionKey, message string, images []Ima
 	if message == "" && len(images) == 0 && len(files) == 0 {
 		return fmt.Errorf("message or attachment is required")
 	}
-	if (len(images) > 0 || len(files) > 0) && !e.attachmentSendEnabled {
+	if (len(images) > 0 || len(files) > 0) && !e.attachmentSendEnabled.Load() {
 		return ErrAttachmentSendDisabled
 	}
 
@@ -12508,7 +12518,7 @@ func (e *Engine) SendAudiosToSession(sessionKey string, audios []FileAttachment)
 	if err != nil {
 		return err
 	}
-	if !e.attachmentSendEnabled {
+	if !e.attachmentSendEnabled.Load() {
 		return ErrAttachmentSendDisabled
 	}
 
@@ -12552,7 +12562,7 @@ func (e *Engine) SendVideosToSession(sessionKey string, videos []FileAttachment)
 	if err != nil {
 		return err
 	}
-	if !e.attachmentSendEnabled {
+	if !e.attachmentSendEnabled.Load() {
 		return ErrAttachmentSendDisabled
 	}
 
@@ -12907,6 +12917,9 @@ func (e *Engine) waitOutgoing(p Platform) error {
 func (e *Engine) renderOutgoingContentForWorkspace(p Platform, content, workspaceDir string) string {
 	if strings.TrimSpace(content) == "" {
 		return content
+	}
+	if e.responseAttachments.Load() {
+		content = renderResponseAttachmentLinks(content)
 	}
 	return TransformLocalReferences(content, e.references, e.agent.Name(), p.Name(), workspaceDir)
 }

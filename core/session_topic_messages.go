@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -83,11 +84,39 @@ func (w *sessionTopicSync) mirrorTopicMessages(ctx context.Context, id string, r
 		if message.ID == "" {
 			return fmt.Errorf("message source returned an empty message ID")
 		}
-		content := w.formatMirroredMessage(message)
+		display := message
+		progress, tracked := w.state.Attachments[id][message.ID]
+		if message.Role == "assistant" && ((tracked && progress != -1) || (w.engine.responseAttachments.Load() && delivered[message.ID] == 0)) {
+			display.Content = renderResponseAttachmentLinks(message.Content)
+		}
+		content := w.formatMirroredMessage(display)
 		if content == "" {
 			continue
 		}
 		chunks := SplitMessageCodeFenceAware(content, maxPlatformMessageLen)
+		attachmentsEnabled := message.Role == "assistant" && w.engine.responseAttachments.Load() && w.engine.attachmentSendEnabled.Load() && len(responseLinks(message.Content, "/")) > 0
+		if attachmentsEnabled {
+			if w.state.Attachments == nil {
+				w.state.Attachments = make(map[string]map[string]int)
+			}
+			if w.state.Attachments[id] == nil {
+				w.state.Attachments[id] = make(map[string]int)
+			}
+			if _, tracked := w.state.Attachments[id][message.ID]; !tracked {
+				progress := 0
+				if delivered[message.ID] > 0 {
+					progress = -1
+				}
+				w.state.Attachments[id][message.ID] = progress
+				// Save before the first text chunk, so a restart between text
+				// and files resumes attachments rather than treating them as old.
+				if progress == 0 {
+					if err := w.save(); err != nil {
+						return err
+					}
+				}
+			}
+		}
 		for i := delivered[message.ID]; i < len(chunks); i++ {
 			if *remaining == 0 || !w.topicStillSelected(key, id) {
 				return nil
@@ -109,8 +138,56 @@ func (w *sessionTopicSync) mirrorTopicMessages(ctx context.Context, id string, r
 				return err
 			}
 		}
+		if attachmentsEnabled && w.state.Attachments[id][message.ID] >= 0 {
+			if err := w.mirrorResponseAttachments(ctx, id, key, reply, message, remaining); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func (w *sessionTopicSync) mirrorResponseAttachments(ctx context.Context, id, key string, reply any, message SessionMessage, remaining *int) error {
+	workDir := responseWorkDir(nil, w.engine.agent, "")
+	if source, ok := w.engine.agent.(SessionWorkDirProvider); ok {
+		selected := w.engine.sessions.FindByID(w.engine.sessions.ActiveSessionID(key))
+		if selected == nil || selected.GetAgentSessionID() != id {
+			return nil
+		}
+		dir, err := source.GetSessionWorkDir(ctx, id, selected.GetActiveProvider())
+		if err != nil {
+			return err
+		}
+		if dir != "" {
+			workDir = dir
+		}
+	}
+	attachments := responseLinks(message.Content, workDir)
+	for i := w.state.Attachments[id][message.ID]; i < len(attachments); i++ {
+		if *remaining == 0 || !w.topicStillSelected(key, id) {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		retry, err := w.engine.sendResponseAttachment(ctx, w.platform, reply, attachments[i])
+		if err != nil {
+			if retry {
+				return err
+			}
+			slog.Warn("mirrored response attachment unavailable", "path", attachments[i].path, "error", err)
+			if err := w.platform.Send(ctx, reply, w.engine.i18n.Tf(MsgResponseAttachmentFailed, filepath.Base(attachments[i].path))); err != nil {
+				return err
+			}
+		}
+		*remaining -= 1
+		w.state.Attachments[id][message.ID] = i + 1
+		if err := w.save(); err != nil {
+			return err
+		}
+	}
+	w.state.Attachments[id][message.ID] = -2
+	return w.save()
 }
 
 func (w *sessionTopicSync) formatMirroredMessage(message SessionMessage) string {

@@ -21,6 +21,9 @@ type sessionTopicSyncState struct {
 	// Successful chunks per message; old topic-only journals start empty and
 	// catch up their linked chats without changing the new-chat cutoff.
 	Delivered map[string]map[string]int `json:"delivered,omitempty"`
+	// Attachment offsets are separate from text chunks. -1 marks messages
+	// already delivered before attachment forwarding was enabled; -2 is complete.
+	Attachments map[string]map[string]int `json:"response_attachments,omitempty"`
 	// Successful archive cleanup, keyed by topic, including bot-created topics.
 	// Keep these tombstones and the original links so recovery cannot recreate
 	// a removed topic or bind it back to an archived conversation.
@@ -116,6 +119,16 @@ func (w *sessionTopicSync) load() error {
 	for key, id := range w.state.DeletedTopics {
 		if key == "" || id == "" {
 			return fmt.Errorf("session topic sync: invalid deleted topic link")
+		}
+	}
+	for id, messages := range w.state.Attachments {
+		if w.state.Topics[id] == "" {
+			return fmt.Errorf("session topic sync: attachment progress has no topic")
+		}
+		for messageID, count := range messages {
+			if messageID == "" || count < -2 {
+				return fmt.Errorf("session topic sync: invalid attachment progress")
+			}
 		}
 	}
 	for id, messages := range w.state.Delivered {

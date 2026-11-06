@@ -719,13 +719,21 @@ const (
 	// send / cron / timer / relay tool documentation in their native
 	// language. Translation coverage is en + zh for this PR; additional
 	// languages fall back to en automatically.
-	MsgAgentSendToolPrompt  MsgKey = "agent_send_tool_prompt"
-	MsgAgentCronToolPrompt  MsgKey = "agent_cron_tool_prompt"
-	MsgAgentTimerToolPrompt MsgKey = "agent_timer_tool_prompt"
-	MsgAgentRelayToolPrompt MsgKey = "agent_relay_tool_prompt"
+	MsgAgentSendToolPrompt      MsgKey = "agent_send_tool_prompt"
+	MsgResponseAttachmentFailed MsgKey = "response_attachment_failed"
+	MsgAgentCronToolPrompt      MsgKey = "agent_cron_tool_prompt"
+	MsgAgentTimerToolPrompt     MsgKey = "agent_timer_tool_prompt"
+	MsgAgentRelayToolPrompt     MsgKey = "agent_relay_tool_prompt"
 )
 
 var messages = map[MsgKey]map[Language]string{
+	MsgResponseAttachmentFailed: {
+		LangEnglish:            "Couldn't attach %s. The file path is still in the response.",
+		LangChinese:            "无法附加文件 %s。回复中仍保留原始文件链接。",
+		LangTraditionalChinese: "無法附加檔案 %s。回覆中仍保留原始檔案連結。",
+		LangJapanese:           "%s を添付できませんでした。元のファイルリンクは返信に残っています。",
+		LangSpanish:            "No se pudo adjuntar %s. El enlace original sigue en la respuesta.",
+	},
 	MsgGeneralTopicFailed: {
 		LangEnglish:            "I couldn't start this conversation in a new topic, so I haven't processed your message. Please try again or send it inside a topic.",
 		LangChinese:            "无法在新话题中开始对话，因此尚未处理你的消息。请重试，或在话题内发送消息。",

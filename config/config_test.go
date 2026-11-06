@@ -3605,3 +3605,16 @@ func TestRemoveGlobalProvider_CleansUpProviderRefs(t *testing.T) {
 		t.Errorf("proj2 provider_refs: want [], got %v", refs2)
 	}
 }
+
+func TestResponseAttachmentsRequiresSameUser(t *testing.T) {
+	p := validProject("files")
+	p.ResponseAttachments = true
+	cfg := Config{Projects: []ProjectConfig{p}}
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Projects[0].RunAsUser = "otheruser"
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "response_attachments") {
+		t.Fatalf("expected isolation validation, got %v", err)
+	}
+}

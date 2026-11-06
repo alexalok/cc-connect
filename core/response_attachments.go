@@ -1,0 +1,372 @@
+package core
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+type responseAttachment struct {
+	path  string
+	image bool
+}
+
+// SetResponseAttachments enables delivery at the bridge boundary. It does not
+// add instructions, tools, or routing information to the agent's prompt.
+func (e *Engine) SetResponseAttachments(enabled bool, maxBytes int64) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxAttachmentSize
+	}
+	e.responseAttachmentLimit.Store(maxBytes)
+	e.responseAttachments.Store(enabled)
+}
+
+func responseWorkDir(session AgentSession, agent Agent, fallback string) string {
+	dir := ""
+	if wd, ok := session.(interface{ GetWorkDir() string }); ok {
+		dir = wd.GetWorkDir()
+	}
+	if dir == "" {
+		dir = fallback
+	}
+	if dir == "" {
+		if wd, ok := agent.(interface{ GetWorkDir() string }); ok {
+			dir = wd.GetWorkDir()
+		}
+	}
+	if dir == "" {
+		return ""
+	}
+	absolute, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	return absolute
+}
+
+// responseLinks only treats Markdown links as attachment intent. In particular,
+// tool output, bare paths, inline code, fenced code, URLs, and source-line
+// citations must never cause uploads. Selection is independent of file existence
+// so mirror delivery offsets remain stable across retries.
+func responseLinks(text, workDir string) []responseAttachment {
+	return scanResponseLinks(text, workDir, nil)
+}
+
+func scanResponseLinks(text, workDir string, visit func(start, end int, label, target string)) []responseAttachment {
+	var out []responseAttachment
+	seen := map[string]bool{}
+	fence := byte(0)
+	fenceLen := 0
+	inlineTicks := 0
+	offset := 0
+	for _, line := range strings.SplitAfter(text, "\n") {
+		lineStart := offset
+		offset += len(line)
+		trimmed := strings.TrimLeft(line, " ")
+		indent := len(line) - len(trimmed)
+		if indent <= 3 && len(trimmed) > 0 && (trimmed[0] == '`' || trimmed[0] == '~') {
+			n := 0
+			for n < len(trimmed) && trimmed[n] == trimmed[0] {
+				n++
+			}
+			if n >= 3 {
+				if fence == 0 && inlineTicks == 0 {
+					fence = trimmed[0]
+					fenceLen = n
+					continue
+				}
+				if fence == trimmed[0] && n >= fenceLen && strings.TrimSpace(trimmed[n:]) == "" {
+					fence = 0
+					continue
+				}
+			}
+		}
+		if fence != 0 || indent >= 4 || strings.HasPrefix(line, "\t") || strings.HasPrefix(trimmed, ">") {
+			continue
+		}
+		for i := 0; i < len(line); {
+			if line[i] == '\\' && inlineTicks == 0 && i+1 < len(line) {
+				i += 2
+				continue
+			}
+			if line[i] == '`' {
+				n := 1
+				for i+n < len(line) && line[i+n] == '`' {
+					n++
+				}
+				if inlineTicks == 0 {
+					inlineTicks = n
+				} else if inlineTicks == n {
+					inlineTicks = 0
+				}
+				i += n
+				continue
+			}
+			if inlineTicks != 0 || line[i] != '[' {
+				i++
+				continue
+			}
+			start := i
+			// Balance nested brackets in labels, including escaped punctuation.
+			depth := 1
+			i++
+			for i < len(line) && depth > 0 {
+				if line[i] == '\\' && i+1 < len(line) {
+					i += 2
+					continue
+				}
+				if line[i] == '[' {
+					depth++
+				}
+				if line[i] == ']' {
+					depth--
+				}
+				i++
+			}
+			if depth != 0 || i >= len(line) || line[i] != '(' {
+				continue
+			}
+			label := line[start+1 : i-1]
+			target, end, ok := responseLinkTarget(line, i+1)
+			if !ok {
+				i++
+				continue
+			}
+			i = end
+			// Older Codex responses put :line just outside the Markdown link.
+			if i+1 < len(line) && line[i] == ':' && line[i+1] >= '0' && line[i+1] <= '9' {
+				continue
+			}
+			path, ok := responseLinkPath(target, workDir)
+			if !ok {
+				continue
+			}
+			image := start > 0 && line[start-1] == '!'
+			if visit != nil {
+				rawStart := start
+				if image {
+					rawStart--
+				}
+				visit(lineStart+rawStart, lineStart+end, label, target)
+			}
+			if seen[path] {
+				continue
+			}
+			seen[path] = true
+			out = append(out, responseAttachment{path: path, image: start > 0 && line[start-1] == '!'})
+		}
+	}
+	return out
+}
+
+// Render local artifact links as readable labels/paths instead of URLs that
+// messaging platforms cannot open. This only changes the delivered view.
+func renderResponseAttachmentLinks(text string) string {
+	var out strings.Builder
+	end := 0
+	scanResponseLinks(text, "/", func(start, next int, label, target string) {
+		out.WriteString(text[end:start])
+		out.WriteString(label)
+		out.WriteString(" (")
+		ticks := "`"
+		for strings.Contains(target, ticks) {
+			ticks += "`"
+		}
+		out.WriteString(ticks + " " + target + " " + ticks)
+		out.WriteString(")")
+		end = next
+	})
+	if end == 0 {
+		return text
+	}
+	out.WriteString(text[end:])
+	return out.String()
+}
+
+func responseLinkTarget(line string, i int) (string, int, bool) {
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		i++
+	}
+	start := i
+	if i >= len(line) {
+		return "", i, false
+	}
+	if line[i] == '<' {
+		i++
+		start = i
+		for i < len(line) && line[i] != '>' {
+			i++
+		}
+		if i == len(line) {
+			return "", i, false
+		}
+		target := line[start:i]
+		i++
+		end, ok := responseLinkEnd(line, i)
+		return target, end, ok
+	}
+	depth := 0
+	for i < len(line) {
+		c := line[i]
+		if c == '\\' && i+1 < len(line) {
+			i += 2
+			continue
+		}
+		if c == '(' {
+			depth++
+		}
+		if c == ')' {
+			if depth == 0 {
+				return line[start:i], i + 1, i > start
+			}
+			depth--
+		}
+		if (c == ' ' || c == '\t') && depth == 0 {
+			end, ok := responseLinkEnd(line, i)
+			return line[start:i], end, ok && i > start
+		}
+		if c == '\n' {
+			break
+		}
+		i++
+	}
+	return "", i, false
+}
+
+func responseLinkEnd(line string, i int) (int, bool) {
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		i++
+	}
+	if i < len(line) && (line[i] == '"' || line[i] == '\'') {
+		quote := line[i]
+		i++
+		for i < len(line) && line[i] != quote {
+			if line[i] == '\\' && i+1 < len(line) {
+				i++
+			}
+			i++
+		}
+		if i == len(line) {
+			return i, false
+		}
+		i++
+		for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+			i++
+		}
+	}
+	return i + 1, i < len(line) && line[i] == ')'
+}
+
+func responseLinkPath(target, workDir string) (string, bool) {
+	// Markdown escapes only punctuation, not arbitrary characters in filenames.
+	var b strings.Builder
+	for i := 0; i < len(target); i++ {
+		if target[i] == '\\' && i+1 < len(target) && strings.ContainsRune("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", rune(target[i+1])) {
+			i++
+		}
+		b.WriteByte(target[i])
+	}
+	target = b.String()
+	u, err := url.Parse(target)
+	if err != nil || u.Host != "" || u.RawQuery != "" || u.Fragment != "" || strings.HasPrefix(target, "//") {
+		return "", false
+	}
+	if u.Scheme != "" && u.Scheme != "file" {
+		return "", false
+	}
+	path := u.Path
+	if path == "" || strings.ContainsAny(path, "\x00\r\n") {
+		return "", false
+	}
+	if reHashLocation.MatchString(path) || reColonLineOnly.MatchString(path) || reColonLineCol.MatchString(path) || reColonLineRange.MatchString(path) {
+		return "", false
+	}
+	if !filepath.IsAbs(path) {
+		if workDir == "" || !filepath.IsAbs(workDir) {
+			return "", false
+		}
+		path = filepath.Join(workDir, path)
+	}
+	return filepath.Clean(path), true
+}
+
+func (e *Engine) deliverResponseAttachments(ctx context.Context, p Platform, reply any, text, workDir string) {
+	if !e.responseAttachments.Load() || !e.attachmentSendEnabled.Load() {
+		return
+	}
+	for _, attachment := range responseLinks(text, workDir) {
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := e.sendResponseAttachment(ctx, p, reply, attachment); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Warn("response attachment failed", "path", attachment.path, "error", err)
+			e.send(p, reply, e.i18n.Tf(MsgResponseAttachmentFailed, filepath.Base(attachment.path)))
+		}
+	}
+}
+
+// The boolean distinguishes local failures (missing/oversized/unsupported files)
+// from a delivery failure that the mirror should retry without replaying text.
+func (e *Engine) sendResponseAttachment(ctx context.Context, p Platform, reply any, attachment responseAttachment) (bool, error) {
+	info, err := os.Stat(attachment.path)
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("not a regular file")
+	}
+	limit := e.responseAttachmentLimit.Load()
+	if limit <= 0 {
+		limit = DefaultMaxAttachmentSize
+	}
+	if info.Size() > limit {
+		return false, fmt.Errorf("file exceeds attachment size limit")
+	}
+	f, err := os.Open(attachment.path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	// Check the opened file too; a replacement during open must not bypass the
+	// size limit. LimitReader also bounds growth while reading.
+	opened, err := f.Stat()
+	if err != nil {
+		return false, err
+	}
+	if !opened.Mode().IsRegular() || opened.Size() > limit {
+		return false, fmt.Errorf("invalid attachment file")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return false, err
+	}
+	if int64(len(data)) > limit {
+		return false, fmt.Errorf("file exceeds attachment size limit")
+	}
+	mime := http.DetectContentType(data)
+	name := filepath.Base(attachment.path)
+	if err := ctx.Err(); err != nil {
+		return true, err
+	}
+	if err := e.waitOutgoing(p); err != nil {
+		return true, err
+	}
+	if attachment.image && strings.HasPrefix(mime, "image/") {
+		if sender, ok := p.(ImageSender); ok {
+			return true, sender.SendImage(ctx, reply, ImageAttachment{Data: data, FileName: name, MimeType: mime})
+		}
+	}
+	if sender, ok := p.(FileSender); ok {
+		return true, sender.SendFile(ctx, reply, FileAttachment{Data: data, FileName: name, MimeType: mime})
+	}
+	return false, ErrNotSupported
+}

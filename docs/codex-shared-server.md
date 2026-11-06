@@ -89,3 +89,44 @@ endpoint, without real credentials or model calls. It checks two subscribers,
 idle/active resume, output isolation, reconnect and targeted interruption. The
 server must be allowed to create its local socket. Review protocol changes when
 this test fails; the shared app-server API includes experimental fields.
+
+## Forward files without agent-side bridge commands
+
+Set this at project level (outside `projects.agent.options`):
+
+```toml
+[[projects]]
+name = "my-project"
+response_attachments = true
+inject_sender = false
+```
+
+The bridge uploads local files linked in completed assistant responses, using
+that response's chat/topic. `[report](/absolute/report.pdf)` sends a document;
+`![chart](/absolute/chart.png)` sends an image where supported. Relative links
+resolve against the conversation's working directory. Spaces in paths can use
+Markdown angle brackets, e.g. `[report](</tmp/My Report.pdf>)`.
+
+The agent needs no `cc-connect send` command, routing flags, session environment
+variables, or Telegram instructions. Codex's default bridge configuration adds
+no helper prompt; leave `inject_sender` disabled and avoid `/cron setup` or
+`/bind setup` if you want the agent unaware of the transport. Those optional
+setup commands explicitly write bridge tool instructions to `AGENTS.md`.
+Existing conversation history is not rewritten.
+
+Uploads happen once per completed response, including desktop responses mirrored
+to a linked topic. Repeated links within a response are deduplicated. Already
+mirrored messages are not retroactively uploaded when this option is enabled.
+A mirror retry resumes at the failed attachment without repeating successful
+text chunks or files; a crash between network delivery and its journal save can
+still duplicate the last attachment, as with text delivery.
+
+Only explicit local Markdown links are attachments. Bare paths, code blocks,
+inline code, quoted examples, source-line citations, remote URLs, and user
+messages remain text. The stored native response stays intact; the chat shows a readable filename and
+path in place of the local hyperlink. Missing files, directories,
+oversized files, or failed live uploads produce a short delivery notice.
+Transient mirror upload failures are retried on the next poll. The existing
+`attachment_send` switch and `max_attachment_size_mb` limit apply. This option
+is for trusted local agents running as the bridge's OS user; it is incompatible
+with `run_as_user`. Files must be readable on the bridge host at delivery time.

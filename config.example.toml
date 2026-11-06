@@ -9,6 +9,8 @@
 # 例如：token = "${TELEGRAM_BOT_TOKEN}"
 #
 # Each [[projects]] entry binds one code directory to its own agent + platforms.
+# Set response_attachments = true inside a project to upload local Markdown
+# file/image links from completed assistant replies. No agent commands are needed.
 # A single cc-connect process can manage multiple projects simultaneously.
 # 每个 [[projects]] 将一个代码目录绑定到独立的 agent 和平台。
 # 单个 cc-connect 进程可以同时管理多个项目。
