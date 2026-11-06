@@ -63,6 +63,8 @@ func scanResponseLinks(text, workDir string, visit func(start, end int, label, t
 	seen := map[string]bool{}
 	fence := byte(0)
 	fenceLen := 0
+	fenceIndent := 0
+	var listIndents []int
 	inlineTicks := 0
 	offset := 0
 	for _, line := range strings.SplitAfter(text, "\n") {
@@ -70,25 +72,48 @@ func scanResponseLinks(text, workDir string, visit func(start, end int, label, t
 		offset += len(line)
 		trimmed := strings.TrimLeft(line, " ")
 		indent := len(line) - len(trimmed)
-		if indent <= 3 && len(trimmed) > 0 && (trimmed[0] == '`' || trimmed[0] == '~') {
+		if fence != 0 {
+			n := 0
+			for n < len(trimmed) && trimmed[n] == fence {
+				n++
+			}
+			if indent >= fenceIndent && indent-fenceIndent <= 3 && n >= fenceLen && strings.TrimSpace(trimmed[n:]) == "" {
+				fence = 0
+			}
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, ">") || strings.HasPrefix(line, "\t") {
+			continue
+		}
+		for len(listIndents) > 0 && indent < listIndents[len(listIndents)-1] {
+			listIndents = listIndents[:len(listIndents)-1]
+		}
+		containerIndent := 0
+		if len(listIndents) > 0 {
+			containerIndent = listIndents[len(listIndents)-1]
+		}
+		if indent-containerIndent >= 4 {
+			continue
+		}
+		if width := responseListMarkerWidth(trimmed); width > 0 {
+			containerIndent = indent + width
+			listIndents = append(listIndents, containerIndent)
+			trimmed = trimmed[width:]
+		}
+		if len(trimmed) > 0 && (trimmed[0] == '`' || trimmed[0] == '~') && inlineTicks == 0 {
 			n := 0
 			for n < len(trimmed) && trimmed[n] == trimmed[0] {
 				n++
 			}
 			if n >= 3 {
-				if fence == 0 && inlineTicks == 0 {
-					fence = trimmed[0]
-					fenceLen = n
-					continue
-				}
-				if fence == trimmed[0] && n >= fenceLen && strings.TrimSpace(trimmed[n:]) == "" {
-					fence = 0
-					continue
-				}
+				fence = trimmed[0]
+				fenceLen = n
+				fenceIndent = containerIndent
+				continue
 			}
-		}
-		if fence != 0 || indent >= 4 || strings.HasPrefix(line, "\t") || strings.HasPrefix(trimmed, ">") {
-			continue
 		}
 		for i := 0; i < len(line); {
 			if line[i] == '\\' && inlineTicks == 0 && i+1 < len(line) {
@@ -163,6 +188,37 @@ func scanResponseLinks(text, workDir string, visit func(start, end int, label, t
 		}
 	}
 	return out
+}
+
+// Return the content offset of a CommonMark bullet/ordered list marker.
+// Indentation beyond a list's content column is still checked for code blocks.
+func responseListMarkerWidth(line string) int {
+	if len(line) < 2 {
+		return 0
+	}
+	i := 0
+	if line[0] == '-' || line[0] == '+' || line[0] == '*' {
+		i = 1
+	} else {
+		for i < len(line) && i < 9 && line[i] >= '0' && line[i] <= '9' {
+			i++
+		}
+		if i == 0 || i >= len(line) || (line[i] != '.' && line[i] != ')') {
+			return 0
+		}
+		i++
+	}
+	if i >= len(line) || line[i] != ' ' {
+		return 0
+	}
+	end := i
+	for end < len(line) && line[end] == ' ' {
+		end++
+	}
+	if end-i > 4 {
+		return i + 1
+	}
+	return end
 }
 
 // Render local artifact links as readable labels/paths instead of URLs that
@@ -273,6 +329,10 @@ func responseLinkPath(target, workDir string) (string, bool) {
 		b.WriteByte(target[i])
 	}
 	target = b.String()
+	drive := ""
+	if len(target) >= 3 && ((target[0] >= 'A' && target[0] <= 'Z') || (target[0] >= 'a' && target[0] <= 'z')) && target[1] == ':' && (target[2] == '/' || target[2] == '\\') {
+		drive, target = target[:2], target[2:]
+	}
 	u, err := url.Parse(target)
 	if err != nil || u.Host != "" || u.RawQuery != "" || u.Fragment != "" || strings.HasPrefix(target, "//") {
 		return "", false
@@ -280,14 +340,14 @@ func responseLinkPath(target, workDir string) (string, bool) {
 	if u.Scheme != "" && u.Scheme != "file" {
 		return "", false
 	}
-	path := u.Path
+	path := drive + u.Path
 	if path == "" || strings.ContainsAny(path, "\x00\r\n") {
 		return "", false
 	}
 	if reHashLocation.MatchString(path) || reColonLineOnly.MatchString(path) || reColonLineCol.MatchString(path) || reColonLineRange.MatchString(path) {
 		return "", false
 	}
-	if !filepath.IsAbs(path) {
+	if drive == "" && !filepath.IsAbs(path) {
 		if workDir == "" || !filepath.IsAbs(workDir) {
 			return "", false
 		}
@@ -317,6 +377,9 @@ func (e *Engine) deliverResponseAttachments(ctx context.Context, p Platform, rep
 // The boolean distinguishes local failures (missing/oversized/unsupported files)
 // from a delivery failure that the mirror should retry without replaying text.
 func (e *Engine) sendResponseAttachment(ctx context.Context, p Platform, reply any, attachment responseAttachment) (bool, error) {
+	if !filepath.IsAbs(attachment.path) {
+		return false, fmt.Errorf("attachment path is not absolute on this host")
+	}
 	info, err := os.Stat(attachment.path)
 	if err != nil {
 		return false, err

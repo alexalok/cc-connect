@@ -6876,7 +6876,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				slog.Warn("slow final reply send", "platform", p.Name(), "elapsed", elapsed, "response_len", len(fullResponse))
 			}
 			if !isSilent {
-				e.deliverResponseAttachments(e.ctx, p, replyCtx, baseResponse, responseWorkDir(replySession, replyAgent, workspaceDir))
+				attachmentText := strings.Join(textParts, "")
+				if !strings.HasSuffix(attachmentText, baseResponse) {
+					attachmentText += "\n\n" + baseResponse
+				}
+				e.deliverResponseAttachments(e.ctx, p, replyCtx, attachmentText, responseWorkDir(replySession, replyAgent, workspaceDir))
 			}
 
 			// TTS: async voice reply if enabled (skipped for silent replies)

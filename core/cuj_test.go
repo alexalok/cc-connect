@@ -3872,7 +3872,7 @@ func TestCUJ_A16_ResponseFilesWithoutAgentBridgeInstructions(t *testing.T) {
 		e.ReceiveMessage(p, &Message{SessionKey: topic, Platform: "test", UserID: "user", Content: prompt, ReplyCtx: topic})
 	}
 	response := "Here is [report](" + path + "). Again: [report](" + path + ")."
-	a.setNextSessionEvents([]Event{{Type: EventText, Content: response}, {Type: EventResult, Content: response, Done: true}}, 10)
+	a.setNextSessionEvents([]Event{{Type: EventText, Content: response}, {Type: EventToolUse, ToolName: "verify"}, {Type: EventText, Content: "Report created."}, {Type: EventResult, Content: "Report created.", Done: true}}, 10)
 	// Action 1: a streamed response in the first topic uploads the file once.
 	send("test:one", "make a report")
 	env.waitFor("first attachment", 3*time.Second, func() bool { return len(p.attachments()) == 1 && !e.sessions.GetOrCreateActive("test:one").Busy() })

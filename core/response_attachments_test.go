@@ -335,3 +335,58 @@ func TestResponseAttachments_EnablingDoesNotRechunkOldMessages(t *testing.T) {
 		t.Fatal("enabling attachments replayed historical output")
 	}
 }
+
+func TestResponseAttachments_MirrorKeepsRenderingWhenUploadsDisabled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.txt")
+	body := strings.Repeat("[report]("+path+" \"A long descriptive title for the generated report\") ", 120)
+	a := &topicMessageAgent{topicDiscoveryAgent: topicDiscoveryAgent{infos: []AgentSessionInfo{{ID: "native"}}}, messages: []SessionMessage{{ID: "answer", Role: "assistant", Content: body}}}
+	p := &attachmentTopicPlatform{topicMessagePlatform: topicMessagePlatform{topicSyncPlatform: topicSyncPlatform{target: "owner"}, failAt: 2}}
+	store := filepath.Join(dir, "sessions.json")
+	e, w := newTopicSyncTest(t, a, p, store)
+	e.SetResponseAttachments(true, 1024)
+	e.SetAttachmentSendEnabled(false)
+	if err := w.poll(context.Background()); err == nil {
+		t.Fatal("expected partial text failure")
+	}
+	e2, w2 := newTopicSyncTest(t, a, p, store)
+	e2.SetResponseAttachments(true, 1024)
+	e2.SetAttachmentSendEnabled(false)
+	if err := w2.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w2.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var sent []string
+	for _, text := range p.getSent() {
+		if !strings.HasPrefix(text, "topic:") {
+			sent = append(sent, text)
+		}
+	}
+	want := w2.formatMirroredMessage(SessionMessage{Role: "assistant", Content: renderResponseAttachmentLinks(body)})
+	if strings.Join(sent, "") != strings.Join(SplitMessageCodeFenceAware(want, maxPlatformMessageLen), "") {
+		t.Fatal("retry changed rendered text boundaries")
+	}
+	if len(p.files.attachments()) != 0 {
+		t.Fatal("uploaded with attachment_send=off")
+	}
+}
+
+func TestResponseLinks_WindowsDriveTargets(t *testing.T) {
+	for _, target := range []string{"C:/Users/alice/report.pdf", `C:\Users\alice\report.pdf`} {
+		got := responseLinks("[report]("+target+")", "")
+		if len(got) != 1 || got[0].path != filepath.Clean(target) {
+			t.Fatalf("ignored native drive path %q: %#v", target, got)
+		}
+	}
+}
+
+func TestResponseLinks_NestedListsAndTheirCodeBlocks(t *testing.T) {
+	text := "1. Artifacts:\n    - [report](report.pdf)\n      ![plot](plot.png)\n\n          [example](example.pdf)\n\n2. Another:\n   - ```md\n     [code](code.pdf)\n     ```\n   - [second](second.pdf)\n"
+	got := responseLinks(text, "/workspace")
+	want := []responseAttachment{{"/workspace/report.pdf", false}, {"/workspace/plot.png", true}, {"/workspace/second.pdf", false}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("nested list links: got %#v want %#v", got, want)
+	}
+}

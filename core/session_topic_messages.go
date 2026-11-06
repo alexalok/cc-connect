@@ -94,7 +94,7 @@ func (w *sessionTopicSync) mirrorTopicMessages(ctx context.Context, id string, r
 			continue
 		}
 		chunks := SplitMessageCodeFenceAware(content, maxPlatformMessageLen)
-		attachmentsEnabled := message.Role == "assistant" && w.engine.responseAttachments.Load() && w.engine.attachmentSendEnabled.Load() && len(responseLinks(message.Content, "/")) > 0
+		attachmentsEnabled := message.Role == "assistant" && w.engine.responseAttachments.Load() && len(responseLinks(message.Content, "/")) > 0
 		if attachmentsEnabled {
 			if w.state.Attachments == nil {
 				w.state.Attachments = make(map[string]map[string]int)
@@ -139,6 +139,13 @@ func (w *sessionTopicSync) mirrorTopicMessages(ctx context.Context, id string, r
 			}
 		}
 		if attachmentsEnabled && w.state.Attachments[id][message.ID] >= 0 {
+			if !w.engine.attachmentSendEnabled.Load() {
+				w.state.Attachments[id][message.ID] = -2
+				if err := w.save(); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := w.mirrorResponseAttachments(ctx, id, key, reply, message, remaining); err != nil {
 				return err
 			}
