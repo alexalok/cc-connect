@@ -431,6 +431,7 @@ func main() {
 		engine.SetShowWorkdirIndicator(showWorkdir)
 		engine.SetReplyFooterEnabled(showFooter)
 		engine.SetAttachmentSendEnabled(cfg.AttachmentSend != "off")
+		engine.SetResponseAttachments(proj.ResponseAttachments, resolveMaxAttachmentSize(cfg), proj.ResponseAttachmentRoots...)
 		engine.SetFilterExternalSessions(proj.FilterExternalSessions != nil && *proj.FilterExternalSessions)
 		engine.SetBaseWorkDir(workDir)
 		engine.SetProjectStateStore(projectState)
@@ -1862,6 +1863,7 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 
 	// Reload attachment send-back switch
 	engine.SetAttachmentSendEnabled(cfg.AttachmentSend != "off")
+	engine.SetResponseAttachments(proj.ResponseAttachments, resolveMaxAttachmentSize(cfg), proj.ResponseAttachmentRoots...)
 
 	// Reload filter_external_sessions
 	engine.SetFilterExternalSessions(proj.FilterExternalSessions != nil && *proj.FilterExternalSessions)
