@@ -3618,3 +3618,17 @@ func TestResponseAttachmentsRequiresSameUser(t *testing.T) {
 		t.Fatalf("expected isolation validation, got %v", err)
 	}
 }
+
+func TestResponseAttachmentRootsMustBeAbsolute(t *testing.T) {
+	p := validProject("files")
+	p.ResponseAttachments = true
+	p.ResponseAttachmentRoots = []string{t.TempDir()}
+	cfg := Config{Projects: []ProjectConfig{p}}
+	if err := cfg.validate(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Projects[0].ResponseAttachmentRoots = []string{"relative/artifacts"}
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "response_attachment_roots") {
+		t.Fatalf("expected absolute directory validation, got %v", err)
+	}
+}

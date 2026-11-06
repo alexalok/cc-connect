@@ -537,12 +537,13 @@ type ProjectConfig struct {
 	ShowWorkdirIndicator *bool `toml:"show_workdir_indicator,omitempty"`
 	// ReplyFooter: nil/true = render the reply footer; false = disable it
 	// entirely (the per-line indicator flags above become no-ops).
-	ReplyFooter         *bool        `toml:"reply_footer,omitempty"`
-	InjectSender        *bool        `toml:"inject_sender,omitempty"`        // prepend sender identity (platform + user ID) to each message sent to the agent
-	ResponseAttachments bool         `toml:"response_attachments,omitempty"` // upload local files linked in completed assistant replies
-	DisabledCommands    []string     `toml:"disabled_commands,omitempty"`    // commands to disable for this project (e.g. ["restart", "upgrade"])
-	AdminFrom           string       `toml:"admin_from,omitempty"`           // comma-separated user IDs allowed to run privileged commands; "*" = all allowed users
-	Users               *UsersConfig `toml:"users,omitempty"`                // per-user role config; nil = legacy behavior
+	ReplyFooter             *bool        `toml:"reply_footer,omitempty"`
+	InjectSender            *bool        `toml:"inject_sender,omitempty"`             // prepend sender identity (platform + user ID) to each message sent to the agent
+	ResponseAttachments     bool         `toml:"response_attachments,omitempty"`      // upload local files linked in completed assistant replies
+	ResponseAttachmentRoots []string     `toml:"response_attachment_roots,omitempty"` // additional operator-approved artifact directories
+	DisabledCommands        []string     `toml:"disabled_commands,omitempty"`         // commands to disable for this project (e.g. ["restart", "upgrade"])
+	AdminFrom               string       `toml:"admin_from,omitempty"`                // comma-separated user IDs allowed to run privileged commands; "*" = all allowed users
+	Users                   *UsersConfig `toml:"users,omitempty"`                     // per-user role config; nil = legacy behavior
 	// WorkspaceIdleTimeoutMinsLegacy is the deprecated per-project form of
 	// the workspace idle reaper timeout. New configs should set the top-level
 	// Config.WorkspaceIdleTimeoutMins instead. When the top-level field is
@@ -1137,6 +1138,11 @@ func (c *Config) validateInternal(permissive bool) error {
 		}
 		if proj.ResponseAttachments && proj.RunAsUser != "" {
 			return fmt.Errorf("config: %s.response_attachments requires the agent and bridge to run as the same user", prefix)
+		}
+		for _, root := range proj.ResponseAttachmentRoots {
+			if !filepath.IsAbs(root) {
+				return fmt.Errorf("config: %s.response_attachment_roots must contain absolute directories", prefix)
+			}
 		}
 		if err := validateRunAsEnv(prefix, proj.RunAsEnv); err != nil {
 			return err

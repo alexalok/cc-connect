@@ -3866,7 +3866,7 @@ func TestCUJ_A16_ResponseFilesWithoutAgentBridgeInstructions(t *testing.T) {
 	a := &cujAgent{}
 	e := NewEngine("files", a, []Platform{p}, filepath.Join(dir, "sessions.json"), LangEnglish)
 	defer e.Stop()
-	e.SetResponseAttachments(true, 1024)
+	e.SetResponseAttachments(true, 1024, dir)
 	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine, agent: a}
 	send := func(topic, prompt string) {
 		e.ReceiveMessage(p, &Message{SessionKey: topic, Platform: "test", UserID: "user", Content: prompt, ReplyCtx: topic})

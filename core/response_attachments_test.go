@@ -158,7 +158,7 @@ func TestResponseAttachments_MirrorRetriesWithoutRepeatingTextOrFiles(t *testing
 	p.files.failAt = 2
 	store := filepath.Join(dir, "sessions.json")
 	e, w := newTopicSyncTest(t, a, p, store)
-	e.SetResponseAttachments(true, 1024)
+	e.SetResponseAttachments(true, 1024, dir)
 	if err := w.poll(context.Background()); err == nil {
 		t.Fatal("expected upload failure")
 	}
@@ -167,7 +167,7 @@ func TestResponseAttachments_MirrorRetriesWithoutRepeatingTextOrFiles(t *testing
 	}
 	textCount := len(p.getSent())
 	e2, w2 := newTopicSyncTest(t, a, p, store)
-	e2.SetResponseAttachments(true, 1024)
+	e2.SetResponseAttachments(true, 1024, dir)
 	if err := w2.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestResponseAttachments_MirrorDoesNotUploadOldOrUserLinks(t *testing.T) {
 	if err := w.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	e.SetResponseAttachments(true, 1024)
+	e.SetResponseAttachments(true, 1024, dir)
 	a.messages = append(a.messages, SessionMessage{ID: "user", Role: "user", Content: "[user](" + path + ")"})
 	if err := w.poll(context.Background()); err != nil {
 		t.Fatal(err)
@@ -232,7 +232,14 @@ func TestResponseAttachments_MirrorUsesNativeWorkingDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.sessions.GetOrCreateActive(p.keys[0]).SetActiveProvider("saved-provider")
-	a.messages = []SessionMessage{{ID: "answer", Role: "assistant", Content: "[report](report.txt)"}}
+	outside := filepath.Join(t.TempDir(), "private.txt")
+	if err := os.WriteFile(outside, []byte("outside workspace"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a.messages = []SessionMessage{
+		{ID: "outside", Role: "assistant", Content: "[private](" + outside + ")"},
+		{ID: "answer", Role: "assistant", Content: "[report](report.txt)"},
+	}
 	if err := w.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -255,13 +262,13 @@ func TestResponseAttachments_MissingMirrorFileDoesNotBlockLaterMessages(t *testi
 	p := &attachmentTopicPlatform{topicMessagePlatform: topicMessagePlatform{topicSyncPlatform: topicSyncPlatform{target: "owner"}}}
 	store := filepath.Join(dir, "sessions.json")
 	e, w := newTopicSyncTest(t, a, p, store)
-	e.SetResponseAttachments(true, 1024)
+	e.SetResponseAttachments(true, 1024, dir)
 	if err := w.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	textCount := len(p.getSent())
 	e2, w2 := newTopicSyncTest(t, a, p, store)
-	e2.SetResponseAttachments(true, 1024)
+	e2.SetResponseAttachments(true, 1024, dir)
 	if err := w2.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +291,7 @@ func TestResponseAttachments_ConcurrentConfiguration(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 50; i++ {
-			e.SetResponseAttachments(i%2 == 0, 1024)
+			e.SetResponseAttachments(i%2 == 0, 1024, dir)
 			e.SetAttachmentSendEnabled(i%2 == 0)
 		}
 	}()
@@ -379,6 +386,59 @@ func TestResponseLinks_WindowsDriveTargets(t *testing.T) {
 		if len(got) != 1 || got[0].path != filepath.Clean(target) {
 			t.Fatalf("ignored native drive path %q: %#v", target, got)
 		}
+	}
+}
+
+func TestResponseAttachments_RejectsOutsideWorkspace(t *testing.T) {
+	parent := t.TempDir()
+	workspace := filepath.Join(parent, "workspace")
+	if err := os.Mkdir(workspace, 0700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(parent, "private.txt")
+	if err := os.WriteFile(outside, []byte("outside workspace"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := &responseFilePlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("project", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	defer e.Stop()
+	e.SetResponseAttachments(true, 1024)
+	targets := []string{outside, "../private.txt"}
+	if err := os.Symlink("../private.txt", filepath.Join(workspace, "escape.txt")); err == nil {
+		targets = append(targets, "escape.txt")
+	}
+	for _, target := range targets {
+		e.deliverResponseAttachments(context.Background(), p, "topic", "[report]("+target+")", workspace)
+	}
+	if got := p.attachments(); len(got) != 0 {
+		t.Fatalf("uploaded files outside workspace: %#v", got)
+	}
+	if len(p.getSent()) != len(targets) {
+		t.Fatal("missing delivery failure notices")
+	}
+}
+
+func TestResponseAttachments_ExplicitArtifactRootsAndReload(t *testing.T) {
+	workspace, artifacts := t.TempDir(), t.TempDir()
+	path := filepath.Join(artifacts, "report.txt")
+	if err := os.WriteFile(path, []byte("report"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := &responseFilePlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("project", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	defer e.Stop()
+	roots := []string{artifacts}
+	e.SetResponseAttachments(true, 1024, roots...)
+	roots[0] = workspace // The setter must retain an immutable copy.
+	e.deliverResponseAttachments(context.Background(), p, "topic", "[report]("+path+")", workspace)
+	if len(p.attachments()) != 1 {
+		t.Fatal("explicit artifact directory was not allowed")
+	}
+	e.SetResponseAttachments(true, 1024)
+	e.deliverResponseAttachments(context.Background(), p, "topic", "[report]("+path+")", workspace)
+	e.deliverResponseAttachments(context.Background(), p, "topic", "[report]("+path+")", "")
+	if len(p.attachments()) != 1 || len(p.getSent()) != 2 {
+		t.Fatal("removed or unknown roots still allowed uploads")
 	}
 }
 

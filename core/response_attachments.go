@@ -19,11 +19,13 @@ type responseAttachment struct {
 
 // SetResponseAttachments enables delivery at the bridge boundary. It does not
 // add instructions, tools, or routing information to the agent's prompt.
-func (e *Engine) SetResponseAttachments(enabled bool, maxBytes int64) {
+func (e *Engine) SetResponseAttachments(enabled bool, maxBytes int64, artifactRoots ...string) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxAttachmentSize
 	}
 	e.responseAttachmentLimit.Store(maxBytes)
+	roots := append([]string(nil), artifactRoots...)
+	e.responseAttachmentRoots.Store(&roots)
 	e.responseAttachments.Store(enabled)
 }
 
@@ -364,7 +366,7 @@ func (e *Engine) deliverResponseAttachments(ctx context.Context, p Platform, rep
 		if ctx.Err() != nil {
 			return
 		}
-		if _, err := e.sendResponseAttachment(ctx, p, reply, attachment); err != nil {
+		if _, err := e.sendResponseAttachment(ctx, p, reply, attachment, workDir); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
@@ -376,25 +378,15 @@ func (e *Engine) deliverResponseAttachments(ctx context.Context, p Platform, rep
 
 // The boolean distinguishes local failures (missing/oversized/unsupported files)
 // from a delivery failure that the mirror should retry without replaying text.
-func (e *Engine) sendResponseAttachment(ctx context.Context, p Platform, reply any, attachment responseAttachment) (bool, error) {
+func (e *Engine) sendResponseAttachment(ctx context.Context, p Platform, reply any, attachment responseAttachment, workDir string) (bool, error) {
 	if !filepath.IsAbs(attachment.path) {
 		return false, fmt.Errorf("attachment path is not absolute on this host")
-	}
-	info, err := os.Stat(attachment.path)
-	if err != nil {
-		return false, err
-	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("not a regular file")
 	}
 	limit := e.responseAttachmentLimit.Load()
 	if limit <= 0 {
 		limit = DefaultMaxAttachmentSize
 	}
-	if info.Size() > limit {
-		return false, fmt.Errorf("file exceeds attachment size limit")
-	}
-	f, err := os.Open(attachment.path)
+	f, err := e.openResponseAttachment(attachment.path, workDir, limit)
 	if err != nil {
 		return false, err
 	}
@@ -432,4 +424,46 @@ func (e *Engine) sendResponseAttachment(ctx context.Context, p Platform, reply a
 		return true, sender.SendFile(ctx, reply, FileAttachment{Data: data, FileName: name, MimeType: mime})
 	}
 	return false, ErrNotSupported
+}
+
+// Root operations enforce containment while resolving paths, including symlink
+// replacements between Stat and Open. The workspace and operator-configured
+// artifact directories are the only allowed roots; never guess the bridge cwd.
+func (e *Engine) openResponseAttachment(path, workDir string, limit int64) (*os.File, error) {
+	roots := []string{workDir}
+	if configured := e.responseAttachmentRoots.Load(); configured != nil {
+		roots = append(roots, (*configured)...)
+	}
+	var lastErr error
+	for _, dir := range roots {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil || !filepath.IsLocal(rel) {
+			continue
+		}
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		info, err := root.Stat(rel)
+		if err == nil && (!info.Mode().IsRegular() || info.Size() > limit) {
+			err = fmt.Errorf("invalid attachment file")
+		}
+		var f *os.File
+		if err == nil {
+			f, err = root.Open(rel)
+		}
+		root.Close()
+		if err == nil {
+			return f, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("attachment is outside the workspace and configured artifact directories")
 }

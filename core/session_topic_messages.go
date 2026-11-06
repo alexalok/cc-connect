@@ -177,7 +177,7 @@ func (w *sessionTopicSync) mirrorResponseAttachments(ctx context.Context, id, ke
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		retry, err := w.engine.sendResponseAttachment(ctx, w.platform, reply, attachments[i])
+		retry, err := w.engine.sendResponseAttachment(ctx, w.platform, reply, attachments[i], workDir)
 		if err != nil {
 			if retry {
 				return err

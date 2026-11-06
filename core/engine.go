@@ -373,6 +373,7 @@ type Engine struct {
 
 	responseAttachments     atomic.Bool
 	responseAttachmentLimit atomic.Int64
+	responseAttachmentRoots atomic.Pointer[[]string]
 
 	providerSaveFunc        func(providerName string) error
 	providerAddSaveFunc     func(p ProviderConfig) error

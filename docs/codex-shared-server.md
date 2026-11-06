@@ -99,6 +99,8 @@ Set this at project level (outside `projects.agent.options`):
 name = "my-project"
 response_attachments = true
 inject_sender = false
+# Optional additional artifact directories, beyond the conversation workspace:
+# response_attachment_roots = ["/home/you/artifacts"]
 ```
 
 The bridge uploads local files linked in completed assistant responses, using
@@ -130,3 +132,10 @@ Transient mirror upload failures are retried on the next poll. The existing
 `attachment_send` switch and `max_attachment_size_mb` limit apply. This option
 is for trusted local agents running as the bridge's OS user; it is incompatible
 with `run_as_user`. Files must be readable on the bridge host at delivery time.
+Only files beneath the conversation workspace or `response_attachment_roots`
+are eligible. Roots must be absolute directories controlled by the operator;
+choose artifact directories rather than broad roots such as `/`. Directory-
+relative file operations reject traversal and symlinks escaping those roots,
+including replacements during file access. Absolute symlinks are rejected too.
+These directories are the bridge's upload boundary, not a replacement for the
+agent's sandbox. Unknown workspaces grant no implicit access to the bridge cwd.
