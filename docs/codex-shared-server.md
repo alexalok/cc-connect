@@ -130,7 +130,11 @@ path in place of the local hyperlink. Missing files, directories,
 oversized files, or failed live uploads produce a short delivery notice.
 Transient mirror upload failures are retried on the next poll. The existing
 `attachment_send` switch and `max_attachment_size_mb` limit apply. This option
-is for trusted local agents running as the bridge's OS user; it is incompatible
+attempts at most ten distinct linked files per response; extra links produce
+one limit notice. This also bounds total uploaded bytes per response to ten
+times the per-file size limit. Live delivery aggregates file failures into one
+notice; mirrored delivery journals each failure, with at most ten such notices.
+This feature is for trusted local agents running as the bridge's OS user; it is incompatible
 with `run_as_user`. Files must be readable on the bridge host at delivery time.
 Only files beneath the conversation workspace or `response_attachment_roots`
 are eligible. Roots must be absolute directories controlled by the operator;

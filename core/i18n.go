@@ -721,12 +721,20 @@ const (
 	// languages fall back to en automatically.
 	MsgAgentSendToolPrompt      MsgKey = "agent_send_tool_prompt"
 	MsgResponseAttachmentFailed MsgKey = "response_attachment_failed"
+	MsgResponseAttachmentLimit  MsgKey = "response_attachment_limit"
 	MsgAgentCronToolPrompt      MsgKey = "agent_cron_tool_prompt"
 	MsgAgentTimerToolPrompt     MsgKey = "agent_timer_tool_prompt"
 	MsgAgentRelayToolPrompt     MsgKey = "agent_relay_tool_prompt"
 )
 
 var messages = map[MsgKey]map[Language]string{
+	MsgResponseAttachmentLimit: {
+		LangEnglish:            "Only the first %d linked files can be attached per response. The remaining paths are still in the response.",
+		LangChinese:            "每次回复最多附加前 %d 个链接文件。其余路径仍保留在回复中。",
+		LangTraditionalChinese: "每次回覆最多附加前 %d 個連結檔案。其餘路徑仍保留在回覆中。",
+		LangJapanese:           "各返信に添付できるのは最初の %d 個のリンク先ファイルまでです。残りのパスは返信に残っています。",
+		LangSpanish:            "Solo se pueden adjuntar los primeros %d archivos enlazados por respuesta. Las rutas restantes siguen en la respuesta.",
+	},
 	MsgResponseAttachmentFailed: {
 		LangEnglish:            "Couldn't attach %s. The file path is still in the response.",
 		LangChinese:            "无法附加文件 %s。回复中仍保留原始文件链接。",

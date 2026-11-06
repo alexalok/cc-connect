@@ -442,6 +442,62 @@ func TestResponseAttachments_ExplicitArtifactRootsAndReload(t *testing.T) {
 	}
 }
 
+func TestResponseAttachments_BoundsMissingLinkFanout(t *testing.T) {
+	dir := t.TempDir()
+	var links []string
+	for i := 0; i < 1000; i++ {
+		links = append(links, fmt.Sprintf("[file](missing-%d.txt)", i))
+	}
+	p := &responseFilePlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("project", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	defer e.Stop()
+	e.SetResponseAttachments(true, 1024)
+	e.deliverResponseAttachments(context.Background(), p, "topic", strings.Join(links, " "), dir)
+	if got := len(p.getSent()); got != 2 {
+		t.Fatalf("expected one failure summary and one limit notice, got %d sends", got)
+	}
+}
+
+func TestResponseAttachments_MirrorLimitSurvivesPollAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	var links []string
+	for i := 0; i < maxResponseAttachments+2; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("report-%d.txt", i))
+		if err := os.WriteFile(path, []byte("report"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		links = append(links, "[report]("+path+")")
+	}
+	a := &topicMessageAgent{topicDiscoveryAgent: topicDiscoveryAgent{infos: []AgentSessionInfo{{ID: "native"}}}}
+	p := &attachmentTopicPlatform{topicMessagePlatform: topicMessagePlatform{topicSyncPlatform: topicSyncPlatform{target: "owner"}}}
+	store := filepath.Join(dir, "sessions.json")
+	e, w := newTopicSyncTest(t, a, p, store)
+	e.SetResponseAttachments(true, 6, dir)
+	if err := w.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	a.messages = []SessionMessage{{ID: "answer", Role: "assistant", Content: strings.Join(links, " ")}}
+	remaining := maxResponseAttachments + 1 // One text chunk plus the ten files.
+	if err := w.mirrorTopicMessages(context.Background(), "native", &remaining); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(p.files.attachments()); got != maxResponseAttachments {
+		t.Fatalf("file count: %d", got)
+	}
+	textCount := len(p.getSent())
+	e2, w2 := newTopicSyncTest(t, a, p, store)
+	e2.SetResponseAttachments(true, 6, dir)
+	if err := w2.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w2.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.files.attachments()) != maxResponseAttachments || len(p.getSent()) != textCount+1 {
+		t.Fatal("limit or delivery progress lost after restart")
+	}
+}
+
 func TestResponseLinks_NestedListsAndTheirCodeBlocks(t *testing.T) {
 	text := "1. Artifacts:\n    - [report](report.pdf)\n      ![plot](plot.png)\n\n          [example](example.pdf)\n\n2. Another:\n   - ```md\n     [code](code.pdf)\n     ```\n   - [second](second.pdf)\n"
 	got := responseLinks(text, "/workspace")

@@ -169,7 +169,7 @@ func (w *sessionTopicSync) mirrorResponseAttachments(ctx context.Context, id, ke
 			workDir = dir
 		}
 	}
-	attachments := responseLinks(message.Content, workDir)
+	attachments, truncated := boundedResponseLinks(message.Content, workDir)
 	for i := w.state.Attachments[id][message.ID]; i < len(attachments); i++ {
 		if *remaining == 0 || !w.topicStillSelected(key, id) {
 			return nil
@@ -189,6 +189,19 @@ func (w *sessionTopicSync) mirrorResponseAttachments(ctx context.Context, id, ke
 		}
 		*remaining -= 1
 		w.state.Attachments[id][message.ID] = i + 1
+		if err := w.save(); err != nil {
+			return err
+		}
+	}
+	if truncated && w.state.Attachments[id][message.ID] <= len(attachments) {
+		if *remaining == 0 || !w.topicStillSelected(key, id) {
+			return nil
+		}
+		if err := w.platform.Send(ctx, reply, w.engine.i18n.Tf(MsgResponseAttachmentLimit, maxResponseAttachments)); err != nil {
+			return err
+		}
+		*remaining -= 1
+		w.state.Attachments[id][message.ID] = len(attachments) + 1
 		if err := w.save(); err != nil {
 			return err
 		}

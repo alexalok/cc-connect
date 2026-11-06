@@ -17,6 +17,18 @@ type responseAttachment struct {
 	image bool
 }
 
+// Together with the per-file size limit, this bounds successful uploads to
+// ten times that limit per response, as well as bounding failed-path notices.
+const maxResponseAttachments = 10
+
+func boundedResponseLinks(text, workDir string) ([]responseAttachment, bool) {
+	links := responseLinks(text, workDir)
+	if len(links) > maxResponseAttachments {
+		return links[:maxResponseAttachments], true
+	}
+	return links, false
+}
+
 // SetResponseAttachments enables delivery at the bridge boundary. It does not
 // add instructions, tools, or routing information to the agent's prompt.
 func (e *Engine) SetResponseAttachments(enabled bool, maxBytes int64, artifactRoots ...string) {
@@ -362,7 +374,9 @@ func (e *Engine) deliverResponseAttachments(ctx context.Context, p Platform, rep
 	if !e.responseAttachments.Load() || !e.attachmentSendEnabled.Load() {
 		return
 	}
-	for _, attachment := range responseLinks(text, workDir) {
+	attachments, truncated := boundedResponseLinks(text, workDir)
+	var failed []string
+	for _, attachment := range attachments {
 		if ctx.Err() != nil {
 			return
 		}
@@ -371,8 +385,14 @@ func (e *Engine) deliverResponseAttachments(ctx context.Context, p Platform, rep
 				return
 			}
 			slog.Warn("response attachment failed", "path", attachment.path, "error", err)
-			e.send(p, reply, e.i18n.Tf(MsgResponseAttachmentFailed, filepath.Base(attachment.path)))
+			failed = append(failed, filepath.Base(attachment.path))
 		}
+	}
+	if len(failed) > 0 {
+		e.send(p, reply, e.i18n.Tf(MsgResponseAttachmentFailed, strings.Join(failed, ", ")))
+	}
+	if truncated {
+		e.send(p, reply, e.i18n.Tf(MsgResponseAttachmentLimit, maxResponseAttachments))
 	}
 }
 
