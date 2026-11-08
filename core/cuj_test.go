@@ -3853,3 +3853,47 @@ func TestCUJ_C7_ApprovalAnsweredByAnotherClientContinuesConversation(t *testing.
 	env.userSends("shared-user", "next task")
 	env.waitFor("next answer", 3*time.Second, func() bool { return env.sentContains("ok") })
 }
+
+// An agent replies with ordinary Markdown. Delivery belongs to the bridge:
+// no cc-connect command, no sender prefix, and no guessed active topic.
+func TestCUJ_A16_ResponseFilesWithoutAgentBridgeInstructions(t *testing.T) {
+	dir := responseTestDir(t)
+	path := filepath.Join(dir, "report.txt")
+	if err := os.WriteFile(path, []byte("generated report"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := &responseFilePlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	a := &cujAgent{}
+	e := NewEngine("files", a, []Platform{p}, filepath.Join(dir, "sessions.json"), LangEnglish)
+	defer e.Stop()
+	e.SetResponseAttachments(true, 1024, dir)
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine, agent: a}
+	send := func(topic, prompt string) {
+		e.ReceiveMessage(p, &Message{SessionKey: topic, Platform: "test", UserID: "user", Content: prompt, ReplyCtx: topic})
+	}
+	response := "Here is [report](" + path + "). Again: [report](" + path + ")."
+	a.setNextSessionEvents([]Event{{Type: EventText, Content: response}, {Type: EventToolUse, ToolName: "verify"}, {Type: EventText, Content: "Report created."}, {Type: EventResult, Content: "Report created.", Done: true}}, 10)
+	// Action 1: a streamed response in the first topic uploads the file once.
+	send("test:one", "make a report")
+	env.waitFor("first attachment", 3*time.Second, func() bool { return len(p.attachments()) == 1 && !e.sessions.GetOrCreateActive("test:one").Busy() })
+	// Action 2: a second topic can request the same file without stealing routing.
+	a.setNextSessionEvents([]Event{{Type: EventResult, Content: response, Done: true}}, 0)
+	send("test:two", "show the report")
+	env.waitFor("second attachment", 3*time.Second, func() bool { return len(p.attachments()) == 2 && !e.sessions.GetOrCreateActive("test:two").Busy() })
+	// Action 3: an inbound file link is not an instruction to upload anything.
+	send("test:one", "inspect [report]("+path+")")
+	env.waitFor("ordinary reply", 3*time.Second, func() bool { return env.sentContains("ok") && !e.sessions.GetOrCreateActive("test:one").Busy() })
+	got := p.attachments()
+	if len(got) != 2 || got[0].reply != "test:one" || got[1].reply != "test:two" {
+		t.Fatalf("wrong attachment routing: %#v", got)
+	}
+	a.mu.Lock()
+	sessions := append([]*cujAgentSession(nil), a.sessions...)
+	a.mu.Unlock()
+	if prompts := sessions[0].getSentPrompts(); len(prompts) != 2 || prompts[0] != "make a report" || prompts[1] != "inspect [report]("+path+")" {
+		t.Fatalf("agent input was changed: %v", prompts)
+	}
+	if prompts := sessions[1].getSentPrompts(); len(prompts) != 1 || prompts[0] != "show the report" {
+		t.Fatalf("agent input was changed: %v", prompts)
+	}
+}
